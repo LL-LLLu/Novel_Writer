@@ -45,4 +45,4 @@ def process_files(input_dir, output_dir):
                 f.write(cleaned)
 
 if __name__ == "__main__":
-    process_files("Novel_Writer/data/raw", "Novel_Writer/data/processed/temp_cleaned")
+    process_files("data/raw", "data/processed/temp_cleaned")

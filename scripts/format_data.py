@@ -36,4 +36,4 @@ def format_dataset(input_dir, output_file):
 if __name__ == "__main__":
     # Ensure directories exist (optional improvement, but sticking to provided code logic mostly)
     # The user provided code has specific paths.
-    format_dataset("Novel_Writer/data/processed/temp_cleaned", "Novel_Writer/data/processed/train.jsonl")
+    format_dataset("data/processed/temp_cleaned", "data/processed/train.jsonl")
