@@ -75,3 +75,19 @@ class NovelGenerator:
     ) -> str:
         """Generate a chapter continuation."""
         return self.generate(context, max_new_tokens=max_tokens)
+
+    def load_merged_model(
+        self,
+        merged_model_path: Path,
+        device: str = "cuda"
+    ):
+        """Load a pre-merged model."""
+        logger.info(f"Loading merged model: {merged_model_path}")
+
+        self.tokenizer = AutoTokenizer.from_pretrained(merged_model_path)
+        self.model = AutoModelForCausalLM.from_pretrained(
+            merged_model_path,
+            torch_dtype=torch.float16,
+            device_map=device
+        )
+        self.model.eval()
