@@ -12,3 +12,5 @@ datasketch==1.6.5
 scikit-learn==1.4.0
 fastapi==0.109.0
 uvicorn[standard]==0.27.0
+plotly==5.18.0
+streamlit==1.31.0
