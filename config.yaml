@@ -1,0 +1,23 @@
+# Novel Writer Configuration
+data:
+  input_dir: data/raw
+  output_dir: data/processed
+  temp_dir: data/processed/temp_cleaned
+  chunk_size: 4000
+  overlap: 500
+
+training:
+  base_model: unsloth/llama-3-8b-instruct-bnb-4bit
+  epochs: 3
+  learning_rate: 0.0002
+  max_steps: 500
+  batch_size: 2
+  gradient_accumulation_steps: 4
+
+model:
+  context_length: 8192
+  lora_rank: 32
+  lora_alpha: 16
+  lora_dropout: 0.0
+
+log_level: INFO
