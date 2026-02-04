@@ -6,3 +6,10 @@ data/raw/*
 data/processed/*
 !data/raw/.gitkeep
 !data/processed/.gitkeep
+*.log
+.pytest_cache/
+.coverage
+test_data/
+*.egg-info/
+dist/
+build/
