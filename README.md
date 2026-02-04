@@ -51,19 +51,56 @@ novel-writer pipeline --clean
 novel-writer -v pipeline
 ```
 
+### Advanced Features
+
+#### Quality Pipeline
+
+Improve model quality with our advanced processing pipeline:
+
+```bash
+# Segment novels into chapters
+novel-writer segment --input data/processed/temp_cleaned
+
+# Remove duplicates
+novel-writer deduplicate --input data/processed/train.jsonl --threshold 0.85
+
+# Filter by quality
+novel-writer filter --input data/processed/train.jsonl_dedup.jsonl --keep-ratio 0.8
+
+# Run full quality pipeline
+novel-writer pipeline --segment --deduplicate --filter
+```
+
+#### Advanced Training
+
+Use `Train_Llama3_Advanced.ipynb` for:
+- Multi-epoch training (3 epochs)
+- Train/validation split (90/10)
+- Checkpointing and resume capability
+- Early stopping (patience=3)
+- Evaluation metrics
+- Weights & Biases integration
+
+#### Features
+
+- **Chapter Segmentation**: Intelligent detection of chapter boundaries (supports English, Chinese, Japanese)
+- **Deduplication**: MinHash-based near-duplicate removal
+- **Quality Filtering**: Scoring based on dialogue density, vocabulary variety, text structure
+- **Multi-Epoch Training**: Proper training loop with evaluation
+
 ### Data Preparation
 
 Place your source novels (PDF or TXT) in `data/raw/`, then:
 
 ```bash
-novel-writer pipeline --clean
+novel-writer pipeline --clean --segment --deduplicate --filter
 ```
 
 This creates `data/processed/train.jsonl`.
 
 ### Training (Google Colab)
 
-1. Upload `training/Train_Llama3_Colab.ipynb` to [Google Colab](https://colab.research.google.com/).
+1. Upload `training/Train_Llama3_Advanced.ipynb` to [Google Colab](https://colab.research.google.com/).
 2. Upload `data/processed/train.jsonl` to Colab.
 3. Run all cells.
 
