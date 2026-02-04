@@ -1,35 +1,72 @@
 # Novel Writer Fine-Tuner
 
-A toolset to fine-tune Llama-3 on your custom web novels using Google Colab and Unsloth.
+A professional toolset to fine-tune Llama-3 on your custom web novels using Google Colab and Unsloth.
 
-## Setup
+## Installation
 
-1. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-2. Place your source novels (PDF or TXT) in `data/raw/`.
+```bash
+# Clone repository
+git clone <repository-url>
+cd Novel_Writer
+
+# Install in development mode
+pip install -e .
+
+# Or install dependencies directly
+pip install -r requirements.txt
+```
+
+## Configuration
+
+Create or modify `config.yaml`:
+
+```yaml
+data:
+  input_dir: data/raw
+  output_dir: data/processed
+  chunk_size: 4000
+  overlap: 500
+
+training:
+  base_model: unsloth/llama-3-8b-instruct-bnb-4bit
+  epochs: 3
+  learning_rate: 0.0002
+```
 
 ## Usage
 
-### 1. Data Preparation
-Clean and format your data:
+### CLI Commands
 
 ```bash
-# Clean artifacts and extract text
-python scripts/clean_data.py
+# Clean raw data
+novel-writer clean --input data/raw --output data/clean
 
-# Format into training chunks (JSONL)
-python scripts/format_data.py
+# Format training data
+novel-writer format --input data/clean --output data/train.jsonl
+
+# Run full pipeline
+novel-writer pipeline --clean
+
+# Verbose logging
+novel-writer -v pipeline
 ```
 
-This will create `data/processed/train.jsonl`.
+### Data Preparation
 
-### 2. Training (Google Colab)
-1. Download `training/Train_Llama3_Colab.ipynb`.
-2. Upload it to [Google Colab](https://colab.research.google.com/).
-3. In Colab, upload your generated `train.jsonl` file to the file browser.
-4. Run all cells.
+Place your source novels (PDF or TXT) in `data/raw/`, then:
+
+```bash
+novel-writer pipeline --clean
+```
+
+This creates `data/processed/train.jsonl`.
+
+### Training (Google Colab)
+
+1. Upload `training/Train_Llama3_Colab.ipynb` to [Google Colab](https://colab.research.google.com/).
+2. Upload `data/processed/train.jsonl` to Colab.
+3. Run all cells.
 
 ## Output
-The fine-tuned LoRA adapters will be saved in the `lora_model` folder in Colab.
+
+The fine-tuned LoRA adapters are saved in the `lora_model` folder in Colab.
