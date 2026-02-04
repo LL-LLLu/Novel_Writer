@@ -19,7 +19,10 @@ def cli(ctx: click.Context, config: str, verbose: bool):
     if config_path.exists():
         ctx.obj['config'] = Config.from_yaml(config_path)
     else:
-        click.echo(f"Config file not found: {config_path}. Using defaults.")
+        # Don't warn if just helping
+        if ctx.invoked_subcommand != 'dashboard':
+             # click.echo(f"Config file not found: {config_path}. Using defaults.")
+             pass
         ctx.obj['config'] = Config()
 
     # Setup logger
@@ -28,7 +31,8 @@ def cli(ctx: click.Context, config: str, verbose: bool):
     ctx.obj['logger'] = logger
 
     logger.info(f"Novel Writer v0.1.0")
-    logger.info(f"Config loaded from: {config_path}")
+    if config_path.exists():
+        logger.info(f"Config loaded from: {config_path}")
 
 @cli.command()
 @click.option('--input', '-i', type=click.Path(exists=True), help='Override input directory')
@@ -131,6 +135,97 @@ def filter(ctx: click.Context, input: str, keep_ratio: float):
     except Exception as e:
         logger.error(f"Filtering failed: {e}")
         raise click.ClickException(str(e))
+
+@cli.command()
+@click.option('--input', '-i', type=click.Path(exists=True), help='Input JSONL file')
+@click.option('--output', '-o', type=click.Path(), help='Output JSONL file')
+@click.pass_context
+def instruct(ctx: click.Context, input: str, output: str):
+    """Generate instruction dataset."""
+    config = ctx.obj['config']
+    logger = ctx.obj['logger']
+    
+    input_file = Path(input) if input else config.data.output_dir / "train.jsonl"
+    output_file = Path(output) if output else config.data.output_dir / "train_instruct.jsonl"
+    
+    logger.info(f"Generating instructions from {input_file}...")
+    try:
+        from .processing.instruct import generate_instruct_dataset
+        num = generate_instruct_dataset(input_file, output_file, config)
+        logger.success(f"Generated {num} instruction entries")
+    except Exception as e:
+        logger.error(f"Instruction generation failed: {e}")
+        raise click.ClickException(str(e))
+
+@cli.command()
+@click.option('--prompt', '-p', required=True, help='Text prompt')
+@click.option('--model', '-m', default='lora_model', help='LoRA model path')
+@click.option('--max-tokens', type=int, default=500, help='Max tokens to generate')
+@click.option('--temperature', type=float, default=0.8, help='Sampling temperature')
+@click.pass_context
+def generate(ctx: click.Context, prompt: str, model: str, max_tokens: int, temperature: float):
+    """Generate text with trained model."""
+    logger = ctx.obj['logger']
+
+    try:
+        from .inference import NovelGenerator
+
+        generator = NovelGenerator(
+            base_model_path="unsloth/llama-3-8b-bnb-4bit",
+            lora_path=Path(model) if Path(model).exists() else None
+        )
+
+        generated = generator.generate(
+            prompt=prompt,
+            max_new_tokens=max_tokens,
+            temperature=temperature
+        )
+
+        click.echo(f"\nGenerated Text:\n{'-' * 50}")
+        click.echo(generated)
+        click.echo(f"{'-' * 50}\nLength: {len(generated)} chars")
+
+    except Exception as e:
+        logger.error(f"Generation failed: {e}")
+        raise click.ClickException(str(e))
+
+@cli.command()
+@click.option('--loras', '-l', multiple=True, required=True, help='LoRA paths')
+@click.option('--weights', '-w', type=float, multiple=True, help='Weights')
+@click.option('--output', '-o', required=True, help='Output path')
+@click.pass_context
+def mix(ctx: click.Context, loras: tuple, weights: tuple, output: str):
+    """Merge multiple LoRA styles."""
+    logger = ctx.obj['logger']
+
+    if weights and len(weights) != len(loras):
+        raise click.ClickException("Weights must match number of LoRAs")
+
+    if not weights:
+        # Equal weights
+        weights = [1.0 / len(loras)] * len(loras)
+
+    try:
+        from .processing.mix import mix_styles
+
+        mix_styles(
+            base_model="unsloth/llama-3-8b-bnb-4bit",
+            lora_paths=list(loras),
+            weights=list(weights),
+            output_path=output
+        )
+
+        logger.success(f"Mixed model saved to {output}")
+
+    except Exception as e:
+        logger.error(f"Mixing failed: {e}")
+        raise click.ClickException(str(e))
+
+@cli.command()
+def dashboard():
+    """Launch Streamlit dashboard."""
+    import subprocess
+    subprocess.run(["streamlit", "run", "novel_writer/dashboard.py"])
 
 @cli.command()
 @click.option('--clean', 'run_clean', is_flag=True, help='Clean then format')
