@@ -2,7 +2,7 @@ import click
 from pathlib import Path
 
 from .config import Config
-from .processing import clean_data, format_data
+from .processing import clean_data, format_data, segment_directory, deduplicate_dataset, filter_dataset
 from .utils.logger import setup_logger
 
 @click.group()
@@ -81,17 +81,81 @@ def format(ctx: click.Context, input: str, output: str):
         raise click.ClickException(str(e))
 
 @cli.command()
-@click.option('--clean', is_flag=True, help='Clean then format')
+@click.option('--input', '-i', type=click.Path(exists=True), help='Input directory')
+@click.option('--min-length', type=int, default=1000, help='Min chapter length')
 @click.pass_context
-def pipeline(ctx: click.Context, clean: bool):
+def segment(ctx: click.Context, input: str, min_length: int):
+    """Segment novels into chapters."""
+    config = ctx.obj['config']
+    input_dir = Path(input) if input else config.data.temp_dir
+    logger = ctx.obj['logger']
+
+    logger.info(f"Segmenting files in {input_dir}...")
+    try:
+        chapters = segment_directory(input_dir, min_chapter_length=min_length)
+        logger.success(f"Created {len(chapters)} chapter files")
+    except Exception as e:
+        logger.error(f"Segmentation failed: {e}")
+        raise click.ClickException(str(e))
+
+@cli.command()
+@click.option('--input', '-i', type=click.Path(exists=True), help='Input JSONL file')
+@click.option('--threshold', type=float, default=0.85, help='Similarity threshold')
+@click.pass_context
+def deduplicate(ctx: click.Context, input: str, threshold: float):
+    """Remove duplicate entries from dataset."""
+    logger = ctx.obj['logger']
+    input_file = Path(input)
+
+    logger.info(f"Deduplicating {input_file.name}...")
+    try:
+        num_unique = deduplicate_dataset(input_file, threshold=threshold)
+        logger.success(f"Kept {num_unique} unique entries")
+    except Exception as e:
+        logger.error(f"Deduplication failed: {e}")
+        raise click.ClickException(str(e))
+
+@cli.command()
+@click.option('--input', '-i', type=click.Path(exists=True), help='Input JSONL file')
+@click.option('--keep-ratio', type=float, default=0.8, help='Fraction to keep')
+@click.pass_context
+def filter(ctx: click.Context, input: str, keep_ratio: float):
+    """Filter dataset by quality score."""
+    logger = ctx.obj['logger']
+    input_file = Path(input)
+
+    logger.info(f"Filtering {input_file.name}...")
+    try:
+        num_kept = filter_dataset(input_file, keep_ratio=keep_ratio)
+        logger.success(f"Kept {num_kept} high-quality entries")
+    except Exception as e:
+        logger.error(f"Filtering failed: {e}")
+        raise click.ClickException(str(e))
+
+@cli.command()
+@click.option('--clean', 'run_clean', is_flag=True, help='Clean then format')
+@click.option('--segment', 'run_segment', is_flag=True, help='Segment into chapters')
+@click.option('--deduplicate', 'run_dedup', is_flag=True, help='Remove duplicates')
+@click.option('--filter', 'run_filter', is_flag=True, help='Filter by quality')
+@click.pass_context
+def pipeline(ctx: click.Context, run_clean: bool, run_segment: bool, run_dedup: bool, run_filter: bool):
     """Run complete data preparation pipeline."""
     logger = ctx.obj['logger']
     logger.info(f"Starting full pipeline...")
 
-    if clean:
+    if run_clean:
         ctx.invoke(clean)
 
+    if run_segment:
+        ctx.invoke(segment)
+
     ctx.invoke(format)
+
+    if run_dedup:
+        ctx.invoke(deduplicate)
+
+    if run_filter:
+        ctx.invoke(filter)
 
     logger.success(f"Pipeline completed successfully")
 
