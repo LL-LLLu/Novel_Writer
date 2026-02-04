@@ -81,12 +81,47 @@ Use `Train_Llama3_Advanced.ipynb` for:
 - Evaluation metrics
 - Weights & Biases integration
 
-#### Features
+#### Instruction Tuning
 
-- **Chapter Segmentation**: Intelligent detection of chapter boundaries (supports English, Chinese, Japanese)
-- **Deduplication**: MinHash-based near-duplicate removal
-- **Quality Filtering**: Scoring based on dialogue density, vocabulary variety, text structure
-- **Multi-Epoch Training**: Proper training loop with evaluation
+Generate instruction-response pairs from completion data:
+
+```bash
+novel-writer instruct --input data/processed/train.jsonl --output data/processed/train_instruct.jsonl
+```
+
+#### Inference
+
+Generate text with your trained model:
+
+```bash
+# CLI
+novel-writer generate --prompt "The hero drew his sword..." --max-tokens 1000
+
+# API server
+novel-writer api
+# Then POST to http://localhost:8000/generate
+```
+
+#### Style Mixing
+
+Blend multiple trained styles:
+
+```bash
+novel-writer mix \
+  --loras style_fantasy_lora style_romance_lora \
+  --weights 0.7 0.3 \
+  --output mixed_style_model
+```
+
+#### Data Dashboard
+
+Launch interactive dashboard:
+
+```bash
+novel-writer dashboard
+```
+
+View chunk distribution, dialogue analysis, quality scores, and more.
 
 ### Data Preparation
 
@@ -107,3 +142,28 @@ This creates `data/processed/train.jsonl`.
 ## Output
 
 The fine-tuned LoRA adapters are saved in the `lora_model` folder in Colab.
+
+## API Reference
+
+### POST /generate
+
+Generate novel continuation.
+
+**Request:**
+```json
+{
+  "prompt": "The hero entered the dark cave...",
+  "max_tokens": 500,
+  "temperature": 0.8,
+  "top_p": 0.9
+}
+```
+
+**Response:**
+```json
+{
+  "generated_text": "...",
+  "prompt_length": 35,
+  "generated_length": 512
+}
+```
