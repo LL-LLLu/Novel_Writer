@@ -6,6 +6,7 @@ from .filter import filter_dataset
 from .instruct import generate_instruct_dataset
 from .mix import mix_styles
 from .ingest import ingest_file, ingest_directory, registry as ingest_registry
+from .preference import generate_preference_pairs, PreferencePair
 
 __all__ = [
     "clean_data",
@@ -17,5 +18,7 @@ __all__ = [
     "mix_styles",
     "ingest_file",
     "ingest_directory",
-    "ingest_registry"
+    "ingest_registry",
+    "generate_preference_pairs",
+    "PreferencePair",
 ]

@@ -379,6 +379,37 @@ def evaluate(ctx: click.Context, model: str, output: str, max_tokens: int):
         raise click.ClickException(str(e))
 
 @cli.command()
+@click.option('--input', '-i', type=click.Path(exists=True), required=True, help='Input JSONL dataset')
+@click.option('--output', '-o', type=click.Path(), help='Output JSONL file')
+@click.option('--min-diff', type=float, default=0.1, help='Minimum score difference')
+@click.option('--max-pairs', type=int, default=None, help='Maximum pairs to generate')
+@click.pass_context
+def preference(ctx: click.Context, input: str, output: str, min_diff: float, max_pairs: int):
+    """Generate DPO preference pairs from dataset."""
+    config = ctx.obj['config']
+    logger = ctx.obj['logger']
+
+    input_path = Path(input)
+    output_path = Path(output) if output else config.data.output_dir / "preference_pairs.jsonl"
+
+    logger.info(f"Generating preference pairs from {input_path}...")
+
+    try:
+        from .processing.preference import generate_preference_pairs
+
+        num_pairs = generate_preference_pairs(
+            input_path=input_path,
+            output_path=output_path,
+            min_score_diff=min_diff,
+            max_pairs=max_pairs,
+        )
+
+        logger.success(f"Generated {num_pairs} preference pairs -> {output_path}")
+    except Exception as e:
+        logger.error(f"Preference pair generation failed: {e}")
+        raise click.ClickException(str(e))
+
+@cli.command()
 @click.option('--pipeline', is_flag=True, help='Profile data pipeline')
 @click.option('--generation', is_flag=True, help='Profile text generation')
 @click.option('--num-calls', type=int, default=10, help='Number of generation calls')
