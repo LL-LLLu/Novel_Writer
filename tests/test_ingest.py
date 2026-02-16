@@ -1,3 +1,4 @@
+import sys
 import pytest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -5,6 +6,9 @@ from unittest.mock import patch, MagicMock
 from novel_writer.processing.ingest import (
     IngestReader,
     EPUBReader,
+    HTMLReader,
+    MarkdownReader,
+    MOBIReader,
     ReaderRegistry,
     registry,
     ingest_file,
@@ -188,6 +192,256 @@ class TestEPUBReader:
 
         result = reader.read(Path("empty.epub"))
         assert result == ""
+
+
+# --- HTMLReader tests ---
+
+class TestHTMLReader:
+    """Tests for HTMLReader class."""
+
+    def test_extensions(self):
+        reader = HTMLReader()
+        assert reader.extensions() == [".html", ".htm"]
+
+    def test_can_read_html(self):
+        reader = HTMLReader()
+        assert reader.can_read(Path("page.html")) is True
+        assert reader.can_read(Path("page.htm")) is True
+        assert reader.can_read(Path("page.txt")) is False
+
+    def test_read_extracts_text_from_html(self, tmp_path):
+        """Test that HTMLReader strips tags and extracts text."""
+        reader = HTMLReader()
+
+        html_file = tmp_path / "test.html"
+        html_file.write_text(
+            "<html><body><h1>Title</h1><p>Hello, world!</p></body></html>",
+            encoding="utf-8",
+        )
+
+        result = reader.read(html_file)
+        assert "Title" in result
+        assert "Hello, world!" in result
+        assert "<p>" not in result
+        assert "<h1>" not in result
+
+    def test_read_handles_empty_html(self, tmp_path):
+        """Test that HTMLReader handles empty HTML content."""
+        reader = HTMLReader()
+
+        html_file = tmp_path / "empty.html"
+        html_file.write_text("", encoding="utf-8")
+
+        result = reader.read(html_file)
+        assert result == ""
+
+    def test_read_handles_complex_html(self, tmp_path):
+        """Test that HTMLReader handles HTML with nested tags and attributes."""
+        reader = HTMLReader()
+
+        html_file = tmp_path / "complex.htm"
+        html_file.write_text(
+            '<html><body><div class="chapter"><h2>Chapter 1</h2>'
+            "<p>First paragraph.</p><p>Second paragraph.</p></div></body></html>",
+            encoding="utf-8",
+        )
+
+        result = reader.read(html_file)
+        assert "Chapter 1" in result
+        assert "First paragraph." in result
+        assert "Second paragraph." in result
+        assert "class=" not in result
+
+
+# --- MarkdownReader tests ---
+
+class TestMarkdownReader:
+    """Tests for MarkdownReader class."""
+
+    def test_extensions(self):
+        reader = MarkdownReader()
+        assert reader.extensions() == [".md"]
+
+    def test_can_read_md(self):
+        reader = MarkdownReader()
+        assert reader.can_read(Path("notes.md")) is True
+        assert reader.can_read(Path("notes.txt")) is False
+
+    def test_read_converts_markdown_to_text(self):
+        """Test that MarkdownReader converts markdown via HTML to text."""
+        reader = MarkdownReader()
+
+        md_file = MagicMock(spec=Path)
+        md_file.name = "test.md"
+        md_file.read_text.return_value = "# Hello\n\nSome **bold** text."
+
+        mock_markdown_mod = MagicMock()
+        mock_markdown_mod.markdown.return_value = (
+            "<h1>Hello</h1><p>Some <strong>bold</strong> text.</p>"
+        )
+
+        mock_soup = MagicMock()
+        mock_soup.get_text.return_value = "Hello\nSome bold text."
+        mock_bs4 = MagicMock()
+        mock_bs4.BeautifulSoup.return_value = mock_soup
+
+        with patch.dict(sys.modules, {"markdown": mock_markdown_mod, "bs4": mock_bs4}):
+            result = reader.read(md_file)
+
+        assert result == "Hello\nSome bold text."
+        md_file.read_text.assert_called_once_with(encoding="utf-8")
+        mock_markdown_mod.markdown.assert_called_once_with(
+            "# Hello\n\nSome **bold** text."
+        )
+
+    def test_read_handles_empty_markdown(self):
+        """Test that MarkdownReader handles empty markdown content."""
+        reader = MarkdownReader()
+
+        md_file = MagicMock(spec=Path)
+        md_file.name = "empty.md"
+        md_file.read_text.return_value = ""
+
+        mock_markdown_mod = MagicMock()
+        mock_markdown_mod.markdown.return_value = ""
+
+        mock_soup = MagicMock()
+        mock_soup.get_text.return_value = ""
+        mock_bs4 = MagicMock()
+        mock_bs4.BeautifulSoup.return_value = mock_soup
+
+        with patch.dict(sys.modules, {"markdown": mock_markdown_mod, "bs4": mock_bs4}):
+            result = reader.read(md_file)
+
+        assert result == ""
+
+    def test_read_with_actual_markdown(self):
+        """Test MarkdownReader with markdown content (mocked libraries)."""
+        reader = MarkdownReader()
+
+        md_file = MagicMock(spec=Path)
+        md_file.name = "test.md"
+        md_file.read_text.return_value = "# Title\n\nA paragraph.\n\n- item 1\n- item 2\n"
+
+        mock_markdown_mod = MagicMock()
+        mock_markdown_mod.markdown.return_value = (
+            "<h1>Title</h1>\n<p>A paragraph.</p>\n<ul>\n"
+            "<li>item 1</li>\n<li>item 2</li>\n</ul>"
+        )
+
+        mock_soup = MagicMock()
+        mock_soup.get_text.return_value = "Title\nA paragraph.\n\nitem 1\nitem 2"
+        mock_bs4 = MagicMock()
+        mock_bs4.BeautifulSoup.return_value = mock_soup
+
+        with patch.dict(sys.modules, {"markdown": mock_markdown_mod, "bs4": mock_bs4}):
+            result = reader.read(md_file)
+
+        assert "Title" in result
+        assert "A paragraph." in result
+        assert "item 1" in result
+
+
+# --- MOBIReader tests ---
+
+class TestMOBIReader:
+    """Tests for MOBIReader class."""
+
+    def test_extensions(self):
+        reader = MOBIReader()
+        assert reader.extensions() == [".mobi"]
+
+    def test_can_read_mobi(self):
+        reader = MOBIReader()
+        assert reader.can_read(Path("book.mobi")) is True
+        assert reader.can_read(Path("book.epub")) is False
+
+    def test_read_extracts_text_from_mobi(self, tmp_path):
+        """Test that MOBIReader extracts text from a MOBI file."""
+        reader = MOBIReader()
+
+        # Create a real extracted HTML file for Path.read_text to work
+        extracted_html = tmp_path / "extracted.html"
+        extracted_html.write_text(
+            "<html><body><p>MOBI content here.</p></body></html>",
+            encoding="utf-8",
+        )
+
+        mock_mobi_mod = MagicMock()
+        mock_mobi_mod.extract.return_value = (str(tmp_path), str(extracted_html))
+
+        mock_soup = MagicMock()
+        mock_soup.get_text.return_value = "MOBI content here."
+        mock_bs4 = MagicMock()
+        mock_bs4.BeautifulSoup.return_value = mock_soup
+
+        with patch.dict(sys.modules, {"mobi": mock_mobi_mod, "bs4": mock_bs4}):
+            result = reader.read(Path("test.mobi"))
+
+        assert result == "MOBI content here."
+        mock_mobi_mod.extract.assert_called_once_with(str(Path("test.mobi")))
+
+    def test_read_handles_extraction_error(self):
+        """Test that MOBIReader propagates errors from mobi extraction."""
+        reader = MOBIReader()
+
+        mock_mobi_mod = MagicMock()
+        mock_mobi_mod.extract.side_effect = Exception("Extraction failed")
+
+        mock_bs4 = MagicMock()
+
+        with patch.dict(sys.modules, {"mobi": mock_mobi_mod, "bs4": mock_bs4}):
+            with pytest.raises(Exception, match="Extraction failed"):
+                reader.read(Path("broken.mobi"))
+
+    def test_read_handles_empty_mobi(self, tmp_path):
+        """Test that MOBIReader handles MOBI with empty content."""
+        reader = MOBIReader()
+
+        extracted_html = tmp_path / "empty.html"
+        extracted_html.write_text("", encoding="utf-8")
+
+        mock_mobi_mod = MagicMock()
+        mock_mobi_mod.extract.return_value = (str(tmp_path), str(extracted_html))
+
+        mock_soup = MagicMock()
+        mock_soup.get_text.return_value = ""
+        mock_bs4 = MagicMock()
+        mock_bs4.BeautifulSoup.return_value = mock_soup
+
+        with patch.dict(sys.modules, {"mobi": mock_mobi_mod, "bs4": mock_bs4}):
+            result = reader.read(Path("empty.mobi"))
+
+        assert result == ""
+
+
+# --- Registry with all readers tests ---
+
+class TestRegistryAllReaders:
+    """Tests that the module-level registry supports all expected extensions."""
+
+    def test_registry_supports_all_extensions(self):
+        expected = {".epub", ".html", ".htm", ".md", ".mobi"}
+        actual = set(registry.supported_extensions())
+        assert expected.issubset(actual), (
+            f"Missing extensions: {expected - actual}"
+        )
+
+    def test_registry_html_reader(self):
+        reader = registry.get_reader(Path("page.html"))
+        assert isinstance(reader, HTMLReader)
+
+    def test_registry_htm_reader(self):
+        reader = registry.get_reader(Path("page.htm"))
+        assert isinstance(reader, HTMLReader)
+
+    def test_registry_md_reader(self):
+        reader = registry.get_reader(Path("notes.md"))
+        assert isinstance(reader, MarkdownReader)
+
+    def test_registry_mobi_reader(self):
+        reader = registry.get_reader(Path("book.mobi"))
+        assert isinstance(reader, MOBIReader)
 
 
 # --- Module-level registry tests ---

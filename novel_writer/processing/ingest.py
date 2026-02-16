@@ -63,6 +63,87 @@ class EPUBReader(IngestReader):
         return result
 
 
+class HTMLReader(IngestReader):
+    """Reader for HTML files."""
+
+    def extensions(self) -> list[str]:
+        return [".html", ".htm"]
+
+    def read(self, path: Path) -> str:
+        """
+        Read an HTML file and extract clean text.
+
+        Uses BeautifulSoup to parse HTML and strip all tags.
+        """
+        from bs4 import BeautifulSoup
+
+        logger.info(f"Reading HTML: {path.name}")
+
+        html_content = path.read_text(encoding="utf-8")
+        soup = BeautifulSoup(html_content, "html.parser")
+        text = soup.get_text()
+        result = text.strip()
+
+        logger.info(f"Extracted {len(result)} chars from {path.name}")
+        return result
+
+
+class MarkdownReader(IngestReader):
+    """Reader for Markdown files."""
+
+    def extensions(self) -> list[str]:
+        return [".md"]
+
+    def read(self, path: Path) -> str:
+        """
+        Read a Markdown file and extract clean text.
+
+        Converts Markdown to HTML using the markdown library,
+        then uses BeautifulSoup to extract plain text.
+        """
+        import markdown
+        from bs4 import BeautifulSoup
+
+        logger.info(f"Reading Markdown: {path.name}")
+
+        md_content = path.read_text(encoding="utf-8")
+        html_content = markdown.markdown(md_content)
+        soup = BeautifulSoup(html_content, "html.parser")
+        text = soup.get_text()
+        result = text.strip()
+
+        logger.info(f"Extracted {len(result)} chars from {path.name}")
+        return result
+
+
+class MOBIReader(IngestReader):
+    """Reader for MOBI ebook files."""
+
+    def extensions(self) -> list[str]:
+        return [".mobi"]
+
+    def read(self, path: Path) -> str:
+        """
+        Read a MOBI file and extract text content.
+
+        Uses the mobi library to extract HTML content from the MOBI
+        file, then BeautifulSoup to extract clean text.
+        """
+        import mobi
+        from bs4 import BeautifulSoup
+
+        logger.info(f"Reading MOBI: {path.name}")
+
+        tempdir, filepath = mobi.extract(str(path))
+        html_content = Path(filepath).read_text(encoding="utf-8", errors="ignore")
+        soup = BeautifulSoup(html_content, "html.parser")
+        text = soup.get_text()
+        result = text.strip()
+
+        logger.info(f"Extracted {len(result)} chars from {path.name}")
+        return result
+
+
 class ReaderRegistry:
     """Registry that maps file extensions to reader instances."""
 
@@ -102,6 +183,9 @@ class ReaderRegistry:
 # Module-level registry pre-populated with built-in readers
 registry = ReaderRegistry()
 registry.register(EPUBReader())
+registry.register(HTMLReader())
+registry.register(MarkdownReader())
+registry.register(MOBIReader())
 
 
 def ingest_file(path: Path) -> str:
