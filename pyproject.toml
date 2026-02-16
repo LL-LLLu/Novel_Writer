@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "novel-writer"
+version = "0.1.0"
+requires-python = ">=3.8"
+dependencies = [
+    "click>=8.1.7",
+    "pydantic>=2.5.3",
+    "pyyaml>=6.0.1",
+    "rich>=13.7.0",
+    "loguru>=0.7.2",
+    "pdfplumber>=0.10.3",
+    "pandas>=2.2.0",
+    "tqdm>=4.66.1",
+    "ebooklib>=0.18",
+    "beautifulsoup4>=4.12.3",
+    "markdown>=3.5.2",
+    "mobi>=0.3.3",
+]
+
+[project.scripts]
+novel-writer = "novel_writer.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["novel_writer*"]
