@@ -13,11 +13,11 @@ def runner():
 @pytest.fixture
 def sample_config(tmp_path):
     config_file = tmp_path / "config.yaml"
-    config_file.write_text("""
+    config_file.write_text(f"""
 data:
-  input_dir: test_data/raw
-  output_dir: test_data/processed
-  temp_dir: test_data/temp
+  input_dir: {tmp_path / "test_data" / "raw"}
+  output_dir: {tmp_path / "test_data" / "processed"}
+  temp_dir: {tmp_path / "test_data" / "temp"}
   chunk_size: 100
   overlap: 10
 """)
@@ -30,20 +30,15 @@ def test_cli_help(runner):
     assert 'format' in result.output
 
 def test_clean_command(runner, sample_config, tmp_path):
-    # Create test data
     raw_dir = tmp_path / "test_data" / "raw"
     raw_dir.mkdir(parents=True)
-    (raw_dir / "test.txt").write_text("Test content for cleaning.\nPage 1 of 1\n")
+
+    # Must be >100 chars for validation and >500 chars after cleaning
+    content = "This is a test novel chapter with interesting content. " * 20
+    (raw_dir / "test.txt").write_text(content)
 
     result = runner.invoke(cli, ['-c', str(sample_config), 'clean'])
-
-    if result.exit_code != 0:
-        print(f"Output: {result.output}")
-        print(f"Exception: {result.exception}")
-
-    # Note: Might fail if dependencies not installed in env running pytest
-    # But logic should be sound.
-    assert result.exit_code == 0 or result.exit_code == 1 
+    assert result.exit_code == 0
 
 def test_format_command(runner, sample_config, tmp_path):
     # Create test cleaned data
