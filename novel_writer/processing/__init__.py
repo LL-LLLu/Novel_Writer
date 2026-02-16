@@ -5,6 +5,7 @@ from .deduplicate import deduplicate_dataset
 from .filter import filter_dataset
 from .instruct import generate_instruct_dataset
 from .mix import mix_styles
+from .ingest import ingest_file, ingest_directory, registry as ingest_registry
 
 __all__ = [
     "clean_data",
@@ -13,5 +14,8 @@ __all__ = [
     "deduplicate_dataset",
     "filter_dataset",
     "generate_instruct_dataset",
-    "mix_styles"
+    "mix_styles",
+    "ingest_file",
+    "ingest_directory",
+    "ingest_registry"
 ]

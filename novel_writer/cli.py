@@ -158,6 +158,41 @@ def instruct(ctx: click.Context, input: str, output: str):
         raise click.ClickException(str(e))
 
 @cli.command()
+@click.option('--input', '-i', type=click.Path(exists=True), required=True, help='Input directory with novel files')
+@click.option('--output', '-o', type=click.Path(), help='Output directory for extracted text')
+@click.option('--extensions', '-e', multiple=True, help='File extensions to process (e.g. .epub .html)')
+@click.pass_context
+def ingest(ctx: click.Context, input: str, output: str, extensions: tuple):
+    """Ingest novels from multiple formats (EPUB, HTML, Markdown, MOBI)."""
+    config = ctx.obj['config']
+    logger = ctx.obj['logger']
+
+    input_dir = Path(input)
+    output_dir = Path(output) if output else config.data.temp_dir
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    ext_list = list(extensions) if extensions else None
+
+    logger.info(f"Ingesting files from {input_dir}...")
+
+    try:
+        from .processing.ingest import ingest_directory
+
+        results = ingest_directory(input_dir, extensions=ext_list)
+
+        for file_path, content in results:
+            if content:
+                out_file = output_dir / f"{file_path.stem}_ingested.txt"
+                with open(out_file, 'w', encoding='utf-8') as f:
+                    f.write(content)
+                logger.debug(f"Saved: {out_file.name}")
+
+        logger.success(f"Ingested {len(results)} files to {output_dir}")
+    except Exception as e:
+        logger.error(f"Ingestion failed: {e}")
+        raise click.ClickException(str(e))
+
+@cli.command()
 @click.option('--prompt', '-p', required=True, help='Text prompt')
 @click.option('--model', '-m', default='lora_model', help='LoRA model path')
 @click.option('--max-tokens', type=int, default=500, help='Max tokens to generate')
@@ -228,15 +263,20 @@ def dashboard():
     subprocess.run(["streamlit", "run", "novel_writer/dashboard.py"])
 
 @cli.command()
+@click.option('--ingest', 'run_ingest', is_flag=True, help='Ingest multi-format files first')
 @click.option('--clean', 'run_clean', is_flag=True, help='Clean then format')
 @click.option('--segment', 'run_segment', is_flag=True, help='Segment into chapters')
 @click.option('--deduplicate', 'run_dedup', is_flag=True, help='Remove duplicates')
 @click.option('--filter', 'run_filter', is_flag=True, help='Filter by quality')
 @click.pass_context
-def pipeline(ctx: click.Context, run_clean: bool, run_segment: bool, run_dedup: bool, run_filter: bool):
+def pipeline(ctx: click.Context, run_ingest: bool, run_clean: bool, run_segment: bool, run_dedup: bool, run_filter: bool):
     """Run complete data preparation pipeline."""
     logger = ctx.obj['logger']
+    config = ctx.obj['config']
     logger.info(f"Starting full pipeline...")
+
+    if run_ingest:
+        ctx.invoke(ingest, input=str(config.data.input_dir), output=str(config.data.temp_dir))
 
     if run_clean:
         ctx.invoke(clean)
@@ -246,13 +286,94 @@ def pipeline(ctx: click.Context, run_clean: bool, run_segment: bool, run_dedup: 
 
     ctx.invoke(format)
 
+    train_jsonl = config.data.output_dir / "train.jsonl"
+
     if run_dedup:
-        ctx.invoke(deduplicate)
+        ctx.invoke(deduplicate, input=str(train_jsonl))
+        train_jsonl = train_jsonl.parent / f"{train_jsonl.stem}_dedup.jsonl"
 
     if run_filter:
-        ctx.invoke(filter)
+        ctx.invoke(filter, input=str(train_jsonl))
 
     logger.success(f"Pipeline completed successfully")
+
+
+@cli.command()
+@click.option('--base-model', '-b', required=True, help='Base model path')
+@click.option('--dataset', '-d', required=True, help='Dataset JSONL path')
+@click.option('--trials', '-n', default=20, help='Number of trials')
+@click.option('--output', '-o', default='best_hyperparams.json', help='Output file')
+@click.pass_context
+def tune(ctx: click.Context, base_model: str, dataset: str, trials: int, output: str):
+    """Run hyperparameter tuning."""
+    logger = ctx.obj['logger']
+
+    try:
+        from .tuning import run_hyperparameter_tuning
+
+        logger.info(f"Starting hyperparameter tuning: {trials} trials")
+        run_hyperparameter_tuning(base_model, dataset, output, trials)
+
+        logger.success(f"Tuning complete. Best params saved to {output}")
+
+    except Exception as e:
+        logger.error(f"Tuning failed: {e}")
+        raise click.ClickException(str(e))
+
+@cli.command()
+@click.option('--format', '-f', type=click.Choice(['full', 'gguf', 'vllm', 'onnx']), required=True, help='Export format')
+@click.option('--base-model', '-b', default='unsloth/llama-3-8b-bnb-4bit', help='Base model')
+@click.option('--lora', '-l', help='LoRA adapter path')
+@click.option('--output', '-o', default='exported_model', help='Output path')
+@click.option('--quantization', '-q', default='q4_k_m', help='Quantization level')
+@click.pass_context
+def export(ctx: click.Context, format: str, base_model: str, lora: str, output: str, quantization: str):
+    """Export model to various formats."""
+    logger = ctx.obj['logger']
+
+    try:
+        from .export import export_model
+
+        logger.info(f"Exporting model to {format} format...")
+        export_model(format, base_model, lora, output, quantization)
+
+        logger.success(f"Model exported to {output}")
+
+    except Exception as e:
+        logger.error(f"Export failed: {e}")
+        raise click.ClickException(str(e))
+
+@cli.command()
+@click.option('--pipeline', is_flag=True, help='Profile data pipeline')
+@click.option('--generation', is_flag=True, help='Profile text generation')
+@click.option('--num-calls', type=int, default=10, help='Number of generation calls')
+@click.pass_context
+def profile(ctx: click.Context, pipeline: bool, generation: bool, num_calls: int):
+    """Profile performance."""
+    logger = ctx.obj['logger']
+
+    try:
+        from .profile import profile_pipeline, profile_generation
+        from .config import Config
+
+        if pipeline:
+            config = ctx.obj['config']
+            from .processing import clean_data, format_data
+            profile_pipeline(clean_data, format_data, config)
+
+        if generation:
+            from .inference import NovelGenerator
+
+            generator = NovelGenerator(
+                base_model_path="unsloth/llama-3-8b-bnb-4bit",
+                lora_path=Path("lora_model") if Path("lora_model").exists() else None
+            )
+
+            profile_generation(generator, "Continue the story...", num_calls)
+
+    except Exception as e:
+        logger.error(f"Profiling failed: {e}")
+        raise click.ClickException(str(e))
 
 def main():
     cli()
