@@ -7,6 +7,7 @@ from .instruct import generate_instruct_dataset
 from .mix import mix_styles
 from .ingest import ingest_file, ingest_directory, registry as ingest_registry
 from .preference import generate_preference_pairs, PreferencePair
+from .curriculum import sort_by_curriculum, compute_difficulty, DifficultyScore
 
 __all__ = [
     "clean_data",
@@ -21,4 +22,7 @@ __all__ = [
     "ingest_registry",
     "generate_preference_pairs",
     "PreferencePair",
+    "sort_by_curriculum",
+    "compute_difficulty",
+    "DifficultyScore",
 ]

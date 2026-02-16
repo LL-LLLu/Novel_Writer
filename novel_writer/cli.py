@@ -410,6 +410,39 @@ def preference(ctx: click.Context, input: str, output: str, min_diff: float, max
         raise click.ClickException(str(e))
 
 @cli.command()
+@click.option('--input', '-i', type=click.Path(exists=True), required=True, help='Input JSONL dataset')
+@click.option('--output', '-o', type=click.Path(), help='Output sorted JSONL file')
+@click.option('--reverse', is_flag=True, help='Sort hard-to-easy (anti-curriculum)')
+@click.option('--buckets', type=int, default=3, help='Number of difficulty buckets')
+@click.pass_context
+def curriculum(ctx: click.Context, input: str, output: str, reverse: bool, buckets: int):
+    """Sort training data by difficulty for curriculum learning."""
+    config = ctx.obj['config']
+    logger = ctx.obj['logger']
+
+    input_path = Path(input)
+    output_path = Path(output) if output else config.data.output_dir / "train_curriculum.jsonl"
+
+    logger.info(f"Sorting data by difficulty...")
+
+    try:
+        from .processing.curriculum import sort_by_curriculum
+
+        stats = sort_by_curriculum(
+            input_path=input_path,
+            output_path=output_path,
+            reverse=reverse,
+            num_buckets=buckets,
+        )
+
+        click.echo(f"Sorted {stats['total']} entries ({stats['sorted_order']})")
+        click.echo(f"Difficulty: avg={stats['avg_difficulty']}, range=[{stats['min_difficulty']}, {stats['max_difficulty']}]")
+
+    except Exception as e:
+        logger.error(f"Curriculum sorting failed: {e}")
+        raise click.ClickException(str(e))
+
+@cli.command()
 @click.option('--pipeline', is_flag=True, help='Profile data pipeline')
 @click.option('--generation', is_flag=True, help='Profile text generation')
 @click.option('--num-calls', type=int, default=10, help='Number of generation calls')
