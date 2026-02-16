@@ -43,7 +43,7 @@ class EPUBReader(IngestReader):
         Uses ebooklib to parse the EPUB structure and BeautifulSoup
         to extract clean text from the HTML content.
         """
-        from ebooklib import epub
+        from ebooklib import epub, ITEM_DOCUMENT
         from bs4 import BeautifulSoup
 
         logger.info(f"Reading EPUB: {path.name}")
@@ -51,8 +51,7 @@ class EPUBReader(IngestReader):
         book = epub.read_epub(str(path))
 
         texts = []
-        # ITEM_DOCUMENT = 9 in ebooklib
-        for item in book.get_items_of_type(9):
+        for item in book.get_items_of_type(ITEM_DOCUMENT):
             html_content = item.get_body_content()
             soup = BeautifulSoup(html_content, "html.parser")
             text = soup.get_text()

@@ -48,10 +48,9 @@ class TestIngestReaderCanRead:
         assert reader.can_read(Path("novel.pdf")) is False
 
     def test_can_read_case_insensitive(self):
-        """Suffix comparison should handle the exact suffix from Path."""
+        """Suffix comparison should handle uppercase extensions."""
         reader = TxtTestReader()
-        # Path(".TXT").suffix returns ".TXT"
-        assert reader.can_read(Path("novel.txt")) is True
+        assert reader.can_read(Path("novel.TXT")) is True
 
     def test_can_read_no_extension(self):
         reader = TxtTestReader()
@@ -160,7 +159,7 @@ class TestEPUBReader:
         # Mock read_epub to return mock book
         mock_read_epub.return_value = mock_book
 
-        # Items returned by get_items_of_type(9)
+        # Items returned by get_items_of_type(ITEM_DOCUMENT)
         mock_book.get_items_of_type.return_value = [mock_item1, mock_item2]
 
         # Mock BeautifulSoup to return text extraction
