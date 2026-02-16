@@ -344,6 +344,41 @@ def export(ctx: click.Context, format: str, base_model: str, lora: str, output: 
         raise click.ClickException(str(e))
 
 @cli.command()
+@click.option('--model', '-m', default='lora_model', help='LoRA model path')
+@click.option('--output', '-o', default='benchmark_results.json', help='Output JSON file')
+@click.option('--max-tokens', type=int, default=500, help='Max tokens per generation')
+@click.pass_context
+def evaluate(ctx: click.Context, model: str, output: str, max_tokens: int):
+    """Run evaluation benchmarks on a model."""
+    logger = ctx.obj['logger']
+
+    try:
+        from .evaluation.benchmark import run_benchmark
+        from .inference import NovelGenerator
+
+        logger.info(f"Loading model for evaluation...")
+        generator = NovelGenerator(
+            base_model_path="unsloth/llama-3-8b-bnb-4bit",
+            lora_path=Path(model) if Path(model).exists() else None
+        )
+
+        def generator_fn(prompt: str) -> str:
+            return generator.generate(prompt=prompt, max_new_tokens=max_tokens)
+
+        report = run_benchmark(
+            generator_fn=generator_fn,
+            model_name=model,
+            output_path=Path(output),
+        )
+
+        click.echo(report.summary())
+        logger.success(f"Evaluation complete. Results saved to {output}")
+
+    except Exception as e:
+        logger.error(f"Evaluation failed: {e}")
+        raise click.ClickException(str(e))
+
+@cli.command()
 @click.option('--pipeline', is_flag=True, help='Profile data pipeline')
 @click.option('--generation', is_flag=True, help='Profile text generation')
 @click.option('--num-calls', type=int, default=10, help='Number of generation calls')
