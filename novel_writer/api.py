@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -6,44 +7,16 @@ from pathlib import Path
 import torch
 
 from .inference import NovelGenerator
-from .utils.logger import setup_logger
-
-logger = setup_logger()
-
-app = FastAPI(
-    title="Novel Writer API",
-    description="Generate novel text with fine-tuned models",
-    version="0.1.0"
-)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+from loguru import logger
 
 # Global generator instance
 generator: Optional[NovelGenerator] = None
 
-class GenerationRequest(BaseModel):
-    prompt: str = Field(..., description="Text prompt to continue")
-    max_tokens: int = Field(default=500, ge=1, le=4096)
-    temperature: float = Field(default=0.8, ge=0.0, le=2.0)
-    top_p: float = Field(default=0.9, ge=0.0, le=1.0)
-    top_k: int = Field(default=50, ge=1)
-
-class GenerationResponse(BaseModel):
-    generated_text: str
-    prompt_length: int
-    generated_length: int
-
-@app.on_event("startup")
-async def startup():
-    """Load model on startup."""
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Load model on startup, cleanup on shutdown."""
     global generator
 
-    # Default to a model (can be configured)
     base_model = "unsloth/llama-3-8b-bnb-4bit"
     lora_path = Path("lora_model") if Path("lora_model").exists() else None
 
@@ -57,6 +30,40 @@ async def startup():
     except Exception as e:
         logger.error(f"Failed to load model: {e}")
         generator = None
+
+    yield
+
+    generator = None
+
+app = FastAPI(
+    title="Novel Writer API",
+    description="Generate novel text with fine-tuned models",
+    version="0.1.0",
+    lifespan=lifespan
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+class GenerationRequest(BaseModel):
+    prompt: str = Field(..., description="Text prompt to continue")
+    max_tokens: int = Field(default=500, ge=1, le=4096)
+    temperature: float = Field(default=0.8, ge=0.0, le=2.0)
+    top_p: float = Field(default=0.9, ge=0.0, le=1.0)
+    top_k: int = Field(default=50, ge=1)
+
+class GenerationResponse(BaseModel):
+    generated_text: str
+    prompt_length: int
+    generated_length: int
+
+class ChapterRequest(BaseModel):
+    context: str = Field(..., description="Previous chapter text")
+    max_tokens: int = Field(default=2000, ge=500, le=4096)
 
 @app.get("/health")
 async def health_check():
@@ -90,16 +97,13 @@ async def generate_text(request: GenerationRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/generate/chapter")
-async def generate_chapter(
-    context: str = Field(..., description="Previous chapter text"),
-    max_tokens: int = Field(default=2000, ge=500, le=4096)
-):
+async def generate_chapter(request: ChapterRequest):
     """Generate a full chapter."""
     if generator is None:
         raise HTTPException(status_code=503, detail="Model not loaded")
 
     try:
-        generated = generator.generate_chapter(context, max_tokens)
+        generated = generator.generate_chapter(request.context, request.max_tokens)
 
         return {
             "chapter": generated,

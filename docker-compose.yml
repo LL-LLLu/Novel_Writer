@@ -1,0 +1,45 @@
+version: '3.8'
+
+services:
+  novel-writer:
+    build: .
+    container_name: novel-writer
+    volumes:
+      # Mount data directory
+      - ./data:/app/data
+      # Mount config
+      - ./config.yaml:/app/config.yaml:ro
+      # Mount models (optional)
+      - ./models:/app/models:ro
+    environment:
+      - LOG_LEVEL=INFO
+    ports:
+      - "8000:8000"
+    command: ["python", "-m", "novel_writer.cli", "pipeline", "--clean"]
+
+  # API service
+  api:
+    build: .
+    container_name: novel-writer-api
+    volumes:
+      - ./data:/app/data
+      - ./models:/app/models:ro
+    environment:
+      - LOG_LEVEL=INFO
+    ports:
+      - "8000:8000"
+    command: ["python", "-m", "novel_writer.api"]
+    depends_on:
+      - novel-writer
+
+  # Dashboard service
+  dashboard:
+    build: .
+    container_name: novel-writer-dashboard
+    volumes:
+      - ./data:/app/data
+    ports:
+      - "8501:8501"
+    command: ["streamlit", "run", "novel_writer/dashboard.py", "--server.port=8501"]
+    depends_on:
+      - novel-writer

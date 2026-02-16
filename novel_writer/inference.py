@@ -4,9 +4,7 @@ from peft import PeftModel
 from pathlib import Path
 from typing import Optional
 
-from .utils.logger import setup_logger
-
-logger = setup_logger()
+from loguru import logger
 
 class NovelGenerator:
     """Generate novel text with fine-tuned model."""

@@ -3,7 +3,14 @@ from loguru import logger
 from pathlib import Path
 from typing import Optional
 
+_configured = False
+
 def setup_logger(log_level: str = "INFO", log_file: Optional[Path] = None):
+    global _configured
+
+    if _configured and log_file is None:
+        return logger
+
     logger.remove()
 
     # Console handler with rich formatting
@@ -25,4 +32,5 @@ def setup_logger(log_level: str = "INFO", log_file: Optional[Path] = None):
             retention="7 days",
         )
 
+    _configured = True
     return logger

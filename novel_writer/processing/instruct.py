@@ -3,10 +3,8 @@ from pathlib import Path
 from typing import List, Dict
 import re
 
-from ..utils.logger import setup_logger
+from loguru import logger
 from ..config import Config
-
-logger = setup_logger()
 
 class InstructionGenerator:
     """Generate instruction-response pairs from novel text."""

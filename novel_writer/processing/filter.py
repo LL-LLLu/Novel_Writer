@@ -4,9 +4,7 @@ from pathlib import Path
 from typing import List, Tuple, Dict
 import math
 
-from ..utils.logger import setup_logger
-
-logger = setup_logger()
+from loguru import logger
 
 class QualityFilter:
     """Score and filter text chunks by quality metrics."""

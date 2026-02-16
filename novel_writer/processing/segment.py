@@ -3,9 +3,7 @@ from pathlib import Path
 from typing import List, Tuple
 import unicodedata
 
-from ..utils.logger import setup_logger
-
-logger = setup_logger()
+from loguru import logger
 
 class ChapterSegmenter:
     """Intelligent chapter segmentation for novels."""
@@ -19,7 +17,7 @@ class ChapterSegmenter:
         r"Book\s+\d+",
         # Chinese/Japanese patterns
         r"第\d+章",
-        r"第\d+章",
+        r"第\d+回",
         # Common novel headers
         r"Prologue\b",
         r"Epilogue\b",
@@ -33,7 +31,7 @@ class ChapterSegmenter:
         """
         self.min_chapter_length = min_chapter_length
         self.pattern = re.compile(
-            "|".join(CHAPTER_PATTERNS),
+            "|".join(self.CHAPTER_PATTERNS),
             re.IGNORECASE | re.MULTILINE
         )
 

@@ -13,3 +13,5 @@ test_data/
 *.egg-info/
 dist/
 build/
+.env
+.env.*

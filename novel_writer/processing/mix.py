@@ -5,9 +5,7 @@ from pathlib import Path
 from typing import List, Optional, Dict
 import json
 
-from ..utils.logger import setup_logger
-
-logger = setup_logger()
+from loguru import logger
 
 class StyleMixer:
     """Merge multiple LoRA adapters for blended styles."""
@@ -62,24 +60,23 @@ class StyleMixer:
 
         logger.info(f"Merging {len(lora_paths)} LoRAs with weights {weights}")
 
-        # Load first LoRA
-        merged = self.load_lora(lora_paths[0])
+        # Load all LoRAs and collect their parameters
+        lora_models = []
+        for lora_path in lora_paths:
+            lora_models.append(self.load_lora(lora_path))
 
-        # Blend in additional LoRAs
-        for i, (lora_path, weight) in enumerate(zip(lora_paths[1:], weights[1:])):
-            logger.info(f"Blending {lora_path.name} with weight {weight}")
+        # Use first model as the target, blend all with proper weights
+        merged = lora_models[0]
 
-            # Load second LoRA
-            lora_model = self.load_lora(lora_path)
-
-            # Manually blend the adapters (simplified approach)
-            # For production, use proper LoRA merging
-            for name, param in merged.named_parameters():
-                if 'lora' in name:
-                    other_param = lora_model.get_parameter(name)
+        for name, param in merged.named_parameters():
+            if 'lora' in name:
+                # Weighted sum across all adapters
+                blended = param.data * weights[0]
+                for model, weight in zip(lora_models[1:], weights[1:]):
+                    other_param = model.get_parameter(name)
                     if other_param is not None:
-                        param.data = (param.data * (1 - weight) +
-                                    other_param.data * weight)
+                        blended = blended + other_param.data * weight
+                param.data = blended
 
         return merged
 

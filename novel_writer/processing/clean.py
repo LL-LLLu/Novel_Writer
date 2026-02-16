@@ -4,10 +4,8 @@ from pathlib import Path
 from typing import List, Tuple, Optional
 import pdfplumber
 
-from ..utils.logger import setup_logger
+from loguru import logger
 from ..config import Config
-
-logger = setup_logger()
 
 class ValidationError(Exception):
     """Custom exception for validation errors."""

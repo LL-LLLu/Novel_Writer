@@ -2,15 +2,13 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskPr
 from typing import Iterable, Callable, Optional, Any, List
 
 def create_progress(description: str = "Processing...", total: Optional[int] = None) -> Progress:
-    progress = Progress(
+    return Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
         BarColumn(),
         TaskProgressColumn(),
         TimeRemainingColumn(),
     )
-    progress.start()
-    return progress
 
 def process_with_progress(
     items: Iterable,

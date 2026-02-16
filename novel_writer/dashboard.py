@@ -161,7 +161,7 @@ with col2:
 # Download
 st.header("Export Analysis")
 
-@st.download_button(
+st.download_button(
     label="Download Analysis CSV",
     data=df.to_csv(index=False),
     file_name="dataset_analysis.csv",

@@ -4,9 +4,7 @@ from typing import List, Tuple
 import hashlib
 
 from datasketch import MinHash, MinHashLSH
-from ..utils.logger import setup_logger
-
-logger = setup_logger()
+from loguru import logger
 
 class TextDeduplicator:
     """Remove duplicate and near-duplicate text chunks."""
@@ -122,8 +120,7 @@ class TextDeduplicator:
         output_file.parent.mkdir(parents=True, exist_ok=True)
         with open(output_file, 'w', encoding='utf-8') as f:
             for line, _ in unique:
-                f.write(line)
-                f.write('\n')
+                f.write(line.rstrip('\n') + '\n')
 
         logger.success(
             f"Wrote {len(unique)} unique entries "

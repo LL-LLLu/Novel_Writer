@@ -2,10 +2,8 @@ import json
 from pathlib import Path
 from typing import List
 
-from ..utils.logger import setup_logger
+from loguru import logger
 from ..config import Config
-
-logger = setup_logger()
 
 def create_chunks(text: str, chunk_size: int, overlap: int) -> List[str]:
     """Create overlapping chunks from text."""
