@@ -19,6 +19,7 @@ dependencies = [
     "beautifulsoup4>=4.12.3",
     "markdown>=3.5.2",
     "mobi>=0.3.3",
+    "datasketch>=1.6.0",
 ]
 
 [project.scripts]

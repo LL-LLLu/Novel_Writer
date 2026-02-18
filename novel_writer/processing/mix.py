@@ -1,6 +1,3 @@
-import torch
-from peft import PeftModel
-from transformers import AutoModelForCausalLM, AutoTokenizer
 from pathlib import Path
 from typing import List, Optional, Dict
 import json
@@ -15,6 +12,9 @@ class StyleMixer:
         Args:
             base_model_path: HuggingFace model path
         """
+        import torch
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+
         self.base_model_path = base_model_path
         self.tokenizer = AutoTokenizer.from_pretrained(base_model_path)
         self.base_model = AutoModelForCausalLM.from_pretrained(
@@ -23,8 +23,10 @@ class StyleMixer:
             device_map="cuda" if torch.cuda.is_available() else "cpu"
         )
 
-    def load_lora(self, lora_path: Path) -> PeftModel:
+    def load_lora(self, lora_path: Path):
         """Load a single LoRA adapter."""
+        from peft import PeftModel
+
         logger.info(f"Loading LoRA: {lora_path}")
         return PeftModel.from_pretrained(
             self.base_model,
