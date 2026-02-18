@@ -1,7 +1,8 @@
 import json
 import random
+import re
 from pathlib import Path
-from typing import List
+from typing import List, Tuple
 
 from loguru import logger
 from ..config import Config
@@ -53,35 +54,165 @@ _EN_INSTRUCTIONS = [
     "Carry the scene forward, balancing action with description.",
 ]
 
+# Sentence-ending patterns for boundary-aware splitting
+# CJK: 。！？… don't require trailing whitespace (Chinese has no spaces between sentences)
+# English: .!? require trailing whitespace to avoid matching abbreviations
+_SENTENCE_END_CJK_RE = re.compile(
+    r'[。！？…][""\'\u201d\u300d）\)]*'  # CJK sentence-enders + optional closing quotes
+)
+_SENTENCE_END_EN_RE = re.compile(
+    r'[\.\!\?][""\'\u201d）\)]*'  # English sentence-enders + optional closing quotes
+    r'(?:\s|\n)'                  # must be followed by whitespace/newline
+)
+
+
+def _is_chinese(text: str) -> bool:
+    """Detect if text is primarily Chinese."""
+    sample = text[:500]
+    cjk_count = sum(1 for c in sample if '\u4e00' <= c <= '\u9fff')
+    total_alpha = max(1, sum(1 for c in sample if c.isalpha() or '\u4e00' <= c <= '\u9fff'))
+    return (cjk_count / total_alpha) > 0.3
+
 
 def _pick_instruction(text: str) -> str:
     """Pick a contextually appropriate instruction based on text content."""
-    # Detect language: if >30% CJK characters, use Chinese instructions
-    cjk_count = sum(1 for c in text[:200] if '\u4e00' <= c <= '\u9fff')
-    total_alpha = max(1, sum(1 for c in text[:200] if c.isalpha() or '\u4e00' <= c <= '\u9fff'))
-    is_chinese = (cjk_count / total_alpha) > 0.3
-
-    pool = _ZH_INSTRUCTIONS if is_chinese else _EN_INSTRUCTIONS
+    pool = _ZH_INSTRUCTIONS if _is_chinese(text) else _EN_INSTRUCTIONS
     return random.choice(pool)
 
 
+def _find_sentence_boundary(text: str, target_pos: int, search_range: int = 300) -> int:
+    """Find the nearest sentence boundary near target_pos.
+
+    Searches within search_range characters around target_pos for a sentence-ending
+    punctuation mark. Returns the position right after the sentence end (start of
+    next sentence). Falls back to paragraph boundary, then target_pos.
+    """
+    # Search window
+    start = max(0, target_pos - search_range)
+    end = min(len(text), target_pos + search_range)
+    window = text[start:end]
+
+    # Find all sentence boundaries in the window (both CJK and English)
+    best_pos = None
+    best_dist = search_range + 1
+
+    for pattern in (_SENTENCE_END_CJK_RE, _SENTENCE_END_EN_RE):
+        for m in pattern.finditer(window):
+            boundary = start + m.end()
+            dist = abs(boundary - target_pos)
+            if dist < best_dist:
+                best_dist = dist
+                best_pos = boundary
+
+    if best_pos is not None:
+        return best_pos
+
+    # Fallback: look for paragraph boundary (\n\n)
+    para_start = max(0, target_pos - search_range)
+    para_end = min(len(text), target_pos + search_range)
+    for offset in range(0, search_range):
+        for pos in [target_pos + offset, target_pos - offset]:
+            if 0 <= pos < len(text) - 1 and text[pos:pos+2] == '\n\n':
+                return pos + 2
+    return target_pos
+
+
 def create_chunks(text: str, chunk_size: int, overlap: int) -> List[str]:
-    """Create overlapping chunks from text."""
+    """Create sentence-boundary-aware chunks from text."""
     chunks = []
+    text_len = len(text)
+    if text_len == 0:
+        return chunks
+
     start = 0
-    while start < len(text):
-        end = start + chunk_size
-        chunk = text[start:end]
-        chunks.append(chunk)
-        start += (chunk_size - overlap)
+    while start < text_len:
+        # Find end position, snapping to sentence boundary
+        raw_end = start + chunk_size
+        if raw_end >= text_len:
+            # Last chunk — take everything remaining
+            chunk = text[start:]
+            if chunk.strip():
+                chunks.append(chunk.strip())
+            break
+
+        end = _find_sentence_boundary(text, raw_end)
+        chunk = text[start:end].strip()
+        if chunk:
+            chunks.append(chunk)
+
+        # Advance, accounting for overlap
+        next_start = end - overlap
+        if next_start <= start:
+            # Avoid infinite loop: force advance
+            next_start = start + chunk_size - overlap
+        start = next_start
+
     return chunks
 
+
+def create_continuation_pairs(
+    text: str,
+    chunk_size: int,
+    context_ratio: float = 0.4,
+) -> List[Tuple[str, str]]:
+    """Split text into (context, continuation) pairs for training.
+
+    Each pair has the preceding text as context (input) and the following
+    text as continuation (output). This teaches the model actual continuation.
+
+    Args:
+        text: Full text to split
+        chunk_size: Total size of each context+continuation pair
+        context_ratio: Fraction of chunk_size to use as context (input)
+
+    Returns:
+        List of (context, continuation) tuples
+    """
+    pairs = []
+    text_len = len(text)
+    if text_len < 200:
+        return pairs
+
+    context_size = int(chunk_size * context_ratio)
+    continuation_size = chunk_size - context_size
+    # Step forward by continuation_size so each continuation is unique
+    step = continuation_size
+
+    pos = 0
+    while pos + context_size + 100 < text_len:
+        # Snap the split point (between context and continuation) to a sentence boundary
+        raw_split = pos + context_size
+        split = _find_sentence_boundary(text, raw_split, search_range=200)
+
+        # Snap the end to a sentence boundary too
+        raw_end = split + continuation_size
+        if raw_end >= text_len:
+            end = text_len
+        else:
+            end = _find_sentence_boundary(text, raw_end, search_range=200)
+
+        context = text[pos:split].strip()
+        continuation = text[split:end].strip()
+
+        if len(context) >= 100 and len(continuation) >= 100:
+            pairs.append((context, continuation))
+
+        # Advance
+        next_pos = pos + step
+        if next_pos <= pos:
+            next_pos = pos + max(500, step)
+        pos = next_pos
+
+    return pairs
+
+
 def format_dataset(input_dir: Path, output_file: Path, config: Config) -> int:
-    """Format cleaned data into JSONL."""
+    """Format cleaned data into JSONL with context/continuation pairs."""
     input_path = input_dir
     data = []
 
-    files = list(input_path.glob('*.txt'))
+    # Use rglob to also pick up files in chapter subdirectories
+    files = list(input_path.rglob('*.txt'))
     logger.info(f"Found {len(files)} cleaned files to format")
 
     from ..utils.progress import process_with_progress
@@ -90,22 +221,47 @@ def format_dataset(input_dir: Path, output_file: Path, config: Config) -> int:
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 text = f.read()
-                chunks = create_chunks(
+
+            if len(text) < 200:
+                return
+
+            is_zh = _is_chinese(text)
+
+            # Generate context/continuation pairs
+            pairs = create_continuation_pairs(
+                text,
+                config.data.chunk_size,
+                context_ratio=0.4,
+            )
+
+            for context, continuation in pairs:
+                entry = {
+                    "instruction": _pick_instruction(continuation),
+                    "input": context,
+                    "output": continuation,
+                }
+                data.append(entry)
+
+            # Also add some standalone chunks for variety (pure completion training)
+            # Use ~20% of the text for this
+            if len(text) > config.data.chunk_size:
+                standalone_chunks = create_chunks(
                     text,
                     config.data.chunk_size,
-                    config.data.overlap
+                    config.data.overlap,
                 )
-
-                for chunk in chunks:
+                # Sample a subset to avoid overwhelming the continuation pairs
+                n_standalone = max(1, len(standalone_chunks) // 5)
+                for chunk in random.sample(standalone_chunks, min(n_standalone, len(standalone_chunks))):
                     if len(chunk) < 100:
                         continue
-
                     entry = {
                         "instruction": _pick_instruction(chunk),
                         "input": "",
-                        "output": chunk
+                        "output": chunk,
                     }
                     data.append(entry)
+
         except Exception as e:
             logger.error(f"Failed to format {file_path}: {e}")
 
@@ -116,15 +272,22 @@ def format_dataset(input_dir: Path, output_file: Path, config: Config) -> int:
         total=len(files)
     )
 
+    # Shuffle to mix continuation pairs with standalone chunks
+    random.shuffle(data)
+
     # Write to JSONL
     output_file.parent.mkdir(parents=True, exist_ok=True)
     with open(output_file, 'w', encoding='utf-8') as f:
         for entry in data:
-            json.dump(entry, f)
+            json.dump(entry, f, ensure_ascii=False)
             f.write('\n')
 
-    logger.success(f"Saved {len(data)} entries to {output_file}")
+    n_pairs = sum(1 for e in data if e['input'])
+    n_standalone = len(data) - n_pairs
+    logger.success(f"Saved {len(data)} entries to {output_file} "
+                   f"({n_pairs} continuation pairs + {n_standalone} standalone)")
     return len(data)
+
 
 def format_data(config: Config) -> int:
     """Main format function using config."""

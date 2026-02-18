@@ -279,7 +279,28 @@ def pipeline(ctx: click.Context, run_ingest: bool, run_clean: bool, run_segment:
         ctx.invoke(ingest, input=str(config.data.input_dir), output=str(config.data.temp_dir))
 
     if run_clean:
+        # Clean reads from input_dir (raw files like .pdf/.txt)
         ctx.invoke(clean)
+        # If ingest ran, also clean the ingested files (which are already in temp_dir)
+        # The clean step writes _cleaned.txt to temp_dir, and ingest wrote _ingested.txt there.
+        # We need to clean those ingested files too — re-invoke clean on temp_dir.
+        if run_ingest:
+            ingested_files = list(config.data.temp_dir.glob('*_ingested.txt'))
+            if ingested_files:
+                logger.info(f"Cleaning {len(ingested_files)} ingested files...")
+                from .processing.clean import process_file, clean_text
+                for f in ingested_files:
+                    try:
+                        with open(f, 'r', encoding='utf-8') as fh:
+                            content = fh.read()
+                        cleaned = clean_text(content)
+                        if len(cleaned) >= 500:
+                            out_file = config.data.temp_dir / f"{f.stem}_cleaned.txt"
+                            with open(out_file, 'w', encoding='utf-8') as fh:
+                                fh.write(cleaned)
+                            logger.debug(f"Cleaned ingested: {out_file.name}")
+                    except Exception as e:
+                        logger.error(f"Failed to clean {f}: {e}")
 
     if run_segment:
         ctx.invoke(segment)

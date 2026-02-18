@@ -6,6 +6,15 @@ import math
 
 from loguru import logger
 
+
+def _is_chinese(text: str) -> bool:
+    """Detect if text is primarily Chinese."""
+    sample = text[:500]
+    cjk_count = sum(1 for c in sample if '\u4e00' <= c <= '\u9fff')
+    total_alpha = max(1, sum(1 for c in sample if c.isalpha() or '\u4e00' <= c <= '\u9fff'))
+    return (cjk_count / total_alpha) > 0.3
+
+
 class QualityFilter:
     """Score and filter text chunks by quality metrics."""
 
@@ -16,13 +25,6 @@ class QualityFilter:
         min_dialogue_ratio: float = 0.0,
         min_variety: float = 0.3
     ):
-        """
-        Args:
-            min_length: Minimum character count
-            max_length: Maximum character count
-            min_dialogue_ratio: Min ratio of dialogue (quotes/chars)
-            min_variety: Min word variety (unique words / total words)
-        """
         self.min_length = min_length
         self.max_length = max_length
         self.min_dialogue_ratio = min_dialogue_ratio
@@ -33,45 +35,62 @@ class QualityFilter:
         if len(text) < self.min_length:
             return 0.0
         if len(text) > self.max_length:
-            return 0.5  # Penalize too long
+            return 0.5
 
-        # Ideal length is in middle of range
         ideal = (self.min_length + self.max_length) / 2
         diff = abs(len(text) - ideal)
         return max(0, 1 - diff / ideal)
 
     def score_dialogue(self, text: str) -> float:
-        """Score based on dialogue density (0-1)."""
+        """Score based on dialogue density (0-1). Supports CJK quotes."""
         if len(text) == 0:
             return 0.0
 
-        quote_count = text.count('"')
+        # Count all dialogue quote styles
+        quote_count = (
+            text.count('"') +          # ASCII double quote
+            text.count('\u201c') +     # left curly double quote "
+            text.count('\u201d') +     # right curly double quote "
+            text.count('\u300c') +     # CJK left corner bracket 「
+            text.count('\u300d') +     # CJK right corner bracket 」
+            text.count('\u300e') +     # CJK left double corner bracket 『
+            text.count('\u300f')       # CJK right double corner bracket 』
+        )
         ratio = quote_count / len(text)
 
-        # Novel should have some dialogue
         if ratio < self.min_dialogue_ratio:
             return 0.0
 
-        # Cap at reasonable maximum
         return min(1.0, ratio * 10)
 
     def score_variety(self, text: str) -> float:
-        """Score based on vocabulary variety (0-1)."""
-        words = text.lower().split()
-        if len(words) == 0:
-            return 0.0
+        """Score based on vocabulary variety (0-1). CJK-aware."""
+        is_zh = _is_chinese(text)
 
-        unique_words = set(words)
-        variety = len(unique_words) / len(words)
+        if is_zh:
+            # For Chinese: use character bigrams instead of space-split words
+            chars = [c for c in text if '\u4e00' <= c <= '\u9fff']
+            if len(chars) < 2:
+                return 0.0
+            bigrams = [chars[i] + chars[i+1] for i in range(len(chars) - 1)]
+            total = len(bigrams)
+            unique = len(set(bigrams))
+        else:
+            words = text.lower().split()
+            if len(words) == 0:
+                return 0.0
+            total = len(words)
+            unique = len(set(words))
 
+        variety = unique / total
         return max(0, variety - self.min_variety) / (1 - self.min_variety)
 
     def score_structure(self, text: str) -> float:
-        """Score based on text structure (0-1)."""
+        """Score based on text structure (0-1). Supports CJK punctuation."""
         score = 1.0
 
-        # Penalize all uppercase
-        if text.upper() == text:
+        # Penalize all uppercase (only relevant for non-CJK)
+        if text.upper() == text and not _is_chinese(text):
             score *= 0.3
 
         # Penalize too much whitespace
@@ -79,20 +98,22 @@ class QualityFilter:
         if whitespace_ratio > 0.3:
             score *= 0.5
 
-        # Check for sentence structure (periods)
-        sentences = text.count('.')
+        # Check for sentence structure: count both English and Chinese sentence endings
+        sentences = (
+            text.count('.') +
+            text.count('\u3002') +   # Chinese period 。
+            text.count('\uff01') +   # Chinese exclamation ！
+            text.count('\uff1f') +   # Chinese question mark ？
+            text.count('!') +
+            text.count('?')
+        )
         if sentences < 2 and len(text) > 500:
             score *= 0.4
 
         return score
 
     def score(self, text: str) -> Tuple[float, Dict[str, float]]:
-        """
-        Calculate overall quality score.
-
-        Returns:
-            (overall_score, component_scores)
-        """
+        """Calculate overall quality score."""
         component_scores = {
             'length': self.score_length(text),
             'dialogue': self.score_dialogue(text),
@@ -100,7 +121,6 @@ class QualityFilter:
             'structure': self.score_structure(text),
         }
 
-        # Weighted average
         weights = {
             'length': 0.2,
             'dialogue': 0.3,
@@ -120,20 +140,17 @@ class QualityFilter:
         entries: List[Dict],
         keep_ratio: float = 0.8
     ) -> List[Dict]:
-        """
-        Filter entries keeping top quality.
-
-        Args:
-            entries: List of JSON entries with 'output' field
-            keep_ratio: Fraction of entries to keep
-
-        Returns:
-            Filtered list of entries
-        """
+        """Filter entries keeping top quality."""
         scored_entries = []
 
         for entry in entries:
+            # Score based on output (the main text), but also consider input if present
             text = entry.get('output', '')
+            input_text = entry.get('input', '')
+            if input_text:
+                # For continuation pairs, score the combined text for better assessment
+                text = input_text + '\n' + text
+
             score, components = self.score(text)
             scored_entries.append({
                 'entry': entry,
@@ -141,10 +158,8 @@ class QualityFilter:
                 'components': components
             })
 
-        # Sort by score (descending)
         scored_entries.sort(key=lambda x: x['score'], reverse=True)
 
-        # Keep top percentage
         keep_count = int(len(scored_entries) * keep_ratio)
         filtered = scored_entries[:keep_count]
 
@@ -153,7 +168,6 @@ class QualityFilter:
             f"(kept top {keep_ratio*100:.0f}%)"
         )
 
-        # Log score distribution
         scores = [e['score'] for e in scored_entries]
         logger.info(
             f"Score range: {min(scores):.3f} - {max(scores):.3f}, "
@@ -168,48 +182,36 @@ class QualityFilter:
         output_file: Path = None,
         keep_ratio: float = 0.8
     ) -> int:
-        """
-        Filter JSONL dataset by quality.
-
-        Returns:
-            Number of filtered entries
-        """
+        """Filter JSONL dataset by quality."""
         entries = []
 
-        # Read entries
         logger.info(f"Reading: {input_file}")
         with open(input_file, 'r', encoding='utf-8') as f:
             for line in f:
                 entry = json.loads(line)
                 entries.append(entry)
 
-        # Filter
         logger.info(f"Filtering {len(entries)} entries...")
         filtered = self.filter_entries(entries, keep_ratio)
 
-        # Write
         output_file = output_file or input_file.parent / f"{input_file.stem}_filtered.jsonl"
         output_file.parent.mkdir(parents=True, exist_ok=True)
 
         with open(output_file, 'w', encoding='utf-8') as f:
             for entry in filtered:
-                json.dump(entry, f)
+                json.dump(entry, f, ensure_ascii=False)
                 f.write('\n')
 
         logger.success(f"Wrote {len(filtered)} filtered entries")
 
         return len(filtered)
 
+
 def filter_dataset(
     input_file: Path,
     output_file: Path = None,
     keep_ratio: float = 0.8
 ) -> int:
-    """
-    Convenience function to filter dataset by quality.
-
-    Returns:
-        Number of filtered entries
-    """
+    """Convenience function to filter dataset by quality."""
     filter = QualityFilter()
     return filter.filter_jsonl(input_file, output_file, keep_ratio)

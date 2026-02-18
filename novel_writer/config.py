@@ -21,7 +21,7 @@ class TrainingConfig(BaseModel):
 class ModelConfig(BaseModel):
     context_length: int = Field(default=8192, gt=0)
     lora_rank: int = Field(default=32, gt=0)
-    lora_alpha: int = Field(default=16, gt=0)
+    lora_alpha: int = Field(default=64, gt=0)
     lora_dropout: float = Field(default=0.0, ge=0, le=1)
 
 class Config(BaseModel):
