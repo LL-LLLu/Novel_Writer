@@ -13,5 +13,7 @@ test_data/
 *.egg-info/
 dist/
 build/
+models/
+output/
 .env
 .env.*
