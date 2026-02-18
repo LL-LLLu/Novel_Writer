@@ -171,18 +171,17 @@ Ensure:
 
 def generate_plot_gemini(api_key: str, idea: str, num_chapters: int, lang: str) -> str:
     """Generate plot outline using Google Gemini."""
-    import google.generativeai as genai
+    from google import genai
+    from google.genai import types
 
-    genai.configure(api_key=api_key)
+    client = genai.Client(api_key=api_key)
     system, prompt = _build_plot_prompt(idea, num_chapters, lang)
 
-    model = genai.GenerativeModel(
-        "gemini-3-pro-preview",
-        system_instruction=system,
-    )
-    response = model.generate_content(
-        prompt,
-        generation_config=genai.GenerationConfig(
+    response = client.models.generate_content(
+        model="gemini-3-pro-preview",
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            system_instruction=system,
             temperature=0.9,
             max_output_tokens=8192,
         ),
@@ -558,10 +557,13 @@ def build_ui():
                     return ""
                 try:
                     if provider == "Gemini":
-                        import google.generativeai as genai
-                        genai.configure(api_key=key)
-                        genai.GenerativeModel("gemini-3-pro-preview").generate_content(
-                            "Say OK", generation_config=genai.GenerationConfig(max_output_tokens=5),
+                        from google import genai
+                        from google.genai import types
+                        client = genai.Client(api_key=key)
+                        client.models.generate_content(
+                            model="gemini-3-pro-preview",
+                            contents="Say OK",
+                            config=types.GenerateContentConfig(max_output_tokens=5),
                         )
                         return "Gemini API key verified."
                     else:
