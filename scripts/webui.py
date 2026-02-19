@@ -751,7 +751,13 @@ def generate_text(
         {"role": "user", "content": prompt},
     ]
 
-    text = _tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    # Disable Qwen3 thinking mode — LoRA was trained without <think> tags
+    try:
+        text = _tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True, enable_thinking=False)
+    except TypeError:
+        text = _tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True)
     inputs = _tokenizer(text, return_tensors="pt").to(_model.device)
 
     gen_kwargs = {
@@ -767,7 +773,20 @@ def generate_text(
         outputs = _model.generate(**inputs, **gen_kwargs)
 
     new_tokens = outputs[0][inputs["input_ids"].shape[1]:]
-    return _tokenizer.decode(new_tokens, skip_special_tokens=True)
+    result = _tokenizer.decode(new_tokens, skip_special_tokens=True)
+    # Strip any <think>...</think> blocks that slipped through
+    result = re.sub(r'<think>.*?</think>', '', result, flags=re.DOTALL).strip()
+    # Remove degenerate repeated paragraphs (same paragraph appearing 2+ times)
+    paragraphs = result.split('\n')
+    seen = set()
+    deduped = []
+    for p in paragraphs:
+        key = p.strip()
+        if not key or key not in seen:
+            deduped.append(p)
+            if key:
+                seen.add(key)
+    return '\n'.join(deduped)
 
 
 def generate_text_cloud(
