@@ -3,6 +3,8 @@ Novel Writer Web UI - Story Workshop with LoRA fine-tuned models.
 
 Plot outlines are generated via cloud APIs (Gemini / GPT) for best quality.
 Chapter writing uses your local fine-tuned LoRA model for style-specific prose.
+Multi-agent system (Mastermind + Story Tracker) orchestrates chapter generation
+for plot adherence, continuity, and quality.
 
 Usage:
     python3 scripts/webui.py
@@ -10,13 +12,15 @@ Usage:
 
 Requirements:
     pip install gradio torch transformers peft accelerate bitsandbytes sentencepiece
-    pip install google-generativeai openai
+    pip install google-genai openai
 """
 
 import argparse
+import copy
 import gc
 import json
 import os
+import random
 import re
 import time
 from pathlib import Path
@@ -56,7 +60,138 @@ EN_SYSTEM = (
 )
 
 # ---------------------------------------------------------------------------
-# Cloud API plot generation
+# Instruction pools (from training data — format.py)
+# ---------------------------------------------------------------------------
+_ZH_INSTRUCTIONS = [
+    "续写这段叙事，保持原文的风格和节奏。",
+    "以相同的文风继续这个故事。",
+    "根据已有的情节和人物设定，续写下一段。",
+    "保持叙事视角不变，继续推进故事发展。",
+    "用生动的细节描写续写这个场景。",
+    "通过对话和动作描写推进下面的情节。",
+    "延续当前的叙事氛围，写出接下来发生的事。",
+    "以细腻的笔触续写这段文字。",
+    "按照原文的叙事节奏，写出故事的下一部分。",
+    "继续描绘这个场景中的人物和事件。",
+    "用符合原文风格的语言续写故事。",
+    "展开叙述，让故事自然地向前发展。",
+    "保持文风一致，续写接下来的情节。",
+    "以沉浸式的叙事方式继续这段故事。",
+    "描绘接下来的场景，注意环境和人物的刻画。",
+    "用简洁有力的文字续写这段叙事。",
+    "继续讲述这个故事，注意情感的表达。",
+    "以自然流畅的文笔续写下一段。",
+    "延续原文的基调，推进故事走向。",
+    "用丰富的感官描写续写这个场景。",
+]
+
+_EN_INSTRUCTIONS = [
+    "Continue the narrative in the established style.",
+    "Write the next passage, maintaining the existing voice and tone.",
+    "Advance the story using vivid sensory details.",
+    "Continue this scene with natural dialogue and action.",
+    "Extend the narrative, preserving the point of view and pacing.",
+    "Write what happens next, staying true to the characters.",
+    "Continue the story with concrete, immersive description.",
+    "Carry the narrative forward in the same literary register.",
+    "Write the next segment, matching the established rhythm.",
+    "Develop this scene further with authentic detail.",
+    "Push the story forward through action and dialogue.",
+    "Continue in the same voice, advancing the plot naturally.",
+    "Write the following passage in the style of the preceding text.",
+    "Extend this scene with attention to atmosphere and character.",
+    "Continue the narrative arc with engaging prose.",
+    "Write what comes next, maintaining tension and pacing.",
+    "Advance the story, weaving in environmental detail.",
+    "Continue with prose that matches the tone and texture of the original.",
+    "Develop the next beat of the story with precise language.",
+    "Carry the scene forward, balancing action with description.",
+]
+
+# ---------------------------------------------------------------------------
+# Token utilities
+# ---------------------------------------------------------------------------
+MAX_SEQ_LENGTH = 4096
+
+
+def count_tokens(text: str) -> int:
+    """Count tokens using the loaded tokenizer, or estimate if not loaded."""
+    if _tokenizer is not None:
+        return len(_tokenizer.encode(text, add_special_tokens=False))
+    # Rough estimate: ~1.5 chars/token for CJK, ~4 chars/token for English
+    cjk = sum(1 for c in text if '\u4e00' <= c <= '\u9fff')
+    en_chars = len(text) - cjk
+    return int(cjk / 1.5) + int(en_chars / 4)
+
+
+def _find_sentence_boundary(text: str, max_chars: int, from_end: bool = False) -> int:
+    """Find the nearest sentence boundary within max_chars.
+
+    If from_end=True, search from the end of text backwards.
+    Returns char index for slicing.
+    """
+    sentence_ends_cjk = re.compile(r'[。！？…]+')
+    sentence_ends_en = re.compile(r'[.!?][\u201c\u201d\u2018\u2019"\')\u300d\uff09]*(?:\s|\n)')
+
+    if from_end:
+        search_region = text[-max_chars:] if len(text) > max_chars else text
+        offset = max(0, len(text) - max_chars)
+        # Find the first sentence boundary in the search region
+        best = 0
+        for m in sentence_ends_cjk.finditer(search_region):
+            best = m.end()
+            break
+        for m in sentence_ends_en.finditer(search_region):
+            if m.end() < best or best == 0:
+                best = m.end()
+            break
+        return offset + best if best > 0 else offset
+    else:
+        search_region = text[:max_chars]
+        # Find the last sentence boundary
+        best = max_chars
+        for m in sentence_ends_cjk.finditer(search_region):
+            best = m.end()
+        for m in sentence_ends_en.finditer(search_region):
+            best = m.end()
+        return best
+
+
+def trim_to_token_budget(text: str, max_tokens: int, keep_end: bool = True) -> str:
+    """Trim text to fit within token budget, snapping to sentence boundaries.
+
+    keep_end=True: keep the end of text (truncate beginning) — for context.
+    keep_end=False: keep the beginning (truncate end) — for primers.
+    """
+    current = count_tokens(text)
+    if current <= max_tokens:
+        return text
+
+    # Estimate chars to keep (rough: tokens * avg_chars_per_token)
+    ratio = max_tokens / max(current, 1)
+    target_chars = int(len(text) * ratio * 0.95)  # 5% safety margin
+
+    if keep_end:
+        # Keep the end, cut from beginning
+        start = _find_sentence_boundary(text, len(text) - target_chars, from_end=True)
+        trimmed = text[start:]
+    else:
+        # Keep the beginning, cut from end
+        end = _find_sentence_boundary(text, target_chars, from_end=False)
+        trimmed = text[:end]
+
+    # Verify and re-trim if needed
+    if count_tokens(trimmed) > max_tokens:
+        if keep_end:
+            trimmed = text[-target_chars:]
+        else:
+            trimmed = text[:target_chars]
+
+    return trimmed.strip()
+
+
+# ---------------------------------------------------------------------------
+# Cloud API: plot generation
 # ---------------------------------------------------------------------------
 
 def _build_plot_prompt(idea: str, num_chapters: int, lang: str) -> tuple[str, str]:
@@ -238,6 +373,71 @@ def develop_plot_api(
 
 
 # ---------------------------------------------------------------------------
+# Unified cloud API helper (for agent calls)
+# ---------------------------------------------------------------------------
+
+def call_cloud_api(
+    system: str,
+    prompt: str,
+    provider: str,
+    api_key: str,
+    temperature: float = 0.7,
+    max_tokens: int = 2048,
+) -> str:
+    """Call cloud API (Gemini or GPT) with unified interface."""
+    if provider == "Gemini":
+        from google import genai
+        from google.genai import types
+
+        client = genai.Client(api_key=api_key)
+        response = client.models.generate_content(
+            model="gemini-3-pro-preview",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=system,
+                temperature=temperature,
+                max_output_tokens=max_tokens,
+            ),
+        )
+        return response.text
+    elif provider == "GPT":
+        from openai import OpenAI
+
+        client = OpenAI(api_key=api_key)
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        return response.choices[0].message.content
+    else:
+        raise ValueError(f"Unknown provider: {provider}")
+
+
+def _parse_json_response(text: str) -> dict:
+    """Extract JSON from a cloud API response that may contain markdown fences."""
+    # Try to find JSON block in markdown code fence
+    m = re.search(r'```(?:json)?\s*\n(.*?)\n```', text, re.DOTALL)
+    if m:
+        return json.loads(m.group(1))
+    # Try parsing the whole text as JSON
+    # Strip leading/trailing whitespace and common prefixes
+    cleaned = text.strip()
+    if cleaned.startswith('{'):
+        return json.loads(cleaned)
+    # Last resort: find first { to last }
+    start = cleaned.find('{')
+    end = cleaned.rfind('}')
+    if start != -1 and end != -1:
+        return json.loads(cleaned[start:end + 1])
+    raise ValueError(f"Could not parse JSON from response: {text[:200]}...")
+
+
+# ---------------------------------------------------------------------------
 # Local model state
 # ---------------------------------------------------------------------------
 _model = None
@@ -373,7 +573,7 @@ def generate_text(
     temperature: float = 0.8,
     top_p: float = 0.9,
     top_k: int = 50,
-    repetition_penalty: float = 1.1,
+    repetition_penalty: float = 1.0,
 ):
     """Generate text from the loaded local model."""
     if _model is None or _tokenizer is None:
@@ -407,11 +607,603 @@ def generate_text(
     return _tokenizer.decode(new_tokens, skip_special_tokens=True)
 
 
+def generate_text_cloud(
+    prompt: str,
+    system_prompt: str = "",
+    max_new_tokens: int = 2048,
+    temperature: float = 0.8,
+    provider: str = "Gemini",
+    api_key: str = "",
+):
+    """Generate text using cloud API (Gemini/GPT) instead of a local model.
+
+    This enables running without any GPU — the cloud API does all the writing.
+    """
+    if not api_key.strip():
+        return "Please enter your API key in Settings above."
+
+    if not system_prompt:
+        cjk = sum(1 for c in prompt[:200] if '\u4e00' <= c <= '\u9fff')
+        system_prompt = ZH_SYSTEM if cjk > len(prompt[:200]) * 0.15 else EN_SYSTEM
+
+    return call_cloud_api(
+        system_prompt, prompt, provider, api_key,
+        temperature=temperature, max_tokens=max_new_tokens,
+    )
+
+
 # ---------------------------------------------------------------------------
-# Chapter generation (local model)
+# Story Tracker — maintains the story bible
 # ---------------------------------------------------------------------------
 
-def generate_chapter(
+class StoryTracker:
+    """Maintains a 'story bible' tracking character states, plot threads,
+    and chapter summaries for continuity across chapters."""
+
+    @staticmethod
+    def empty_bible() -> dict:
+        return {
+            "characters": {},
+            "plot_threads": [],
+            "chapter_summaries": [],
+            "style_notes": "",
+        }
+
+    @staticmethod
+    def initialize_from_outline(
+        outline: str, provider: str, api_key: str, lang: str,
+    ) -> dict:
+        """Parse outline into a structured story bible via cloud API. (1 API call)"""
+        if lang == "zh":
+            system = "你是一位小说编辑助手。请从小说大纲中提取结构化信息，以JSON格式输出。"
+            prompt = f"""请分析以下小说大纲，提取关键信息并以JSON格式输出：
+
+{outline}
+
+输出格式（必须是合法JSON）：
+```json
+{{
+  "characters": {{
+    "角色名": {{
+      "description": "外貌和身份简述",
+      "personality": "性格特点",
+      "motivation": "核心动机",
+      "relationships": {{"其他角色名": "关系描述"}},
+      "location": "初始位置",
+      "emotional_state": "初始情感状态"
+    }}
+  }},
+  "plot_threads": [
+    {{
+      "name": "线索名称",
+      "status": "active",
+      "description": "线索描述"
+    }}
+  ],
+  "style_notes": "写作风格要点摘要"
+}}
+```"""
+        else:
+            system = "You are a fiction editor assistant. Extract structured information from the novel outline as JSON."
+            prompt = f"""Analyze the following novel outline and extract key information as JSON:
+
+{outline}
+
+Output format (must be valid JSON):
+```json
+{{
+  "characters": {{
+    "Character Name": {{
+      "description": "Appearance and role",
+      "personality": "Key traits",
+      "motivation": "Core motivation",
+      "relationships": {{"Other Character": "relationship"}},
+      "location": "Starting location",
+      "emotional_state": "Starting emotional state"
+    }}
+  }},
+  "plot_threads": [
+    {{
+      "name": "Thread name",
+      "status": "active",
+      "description": "Thread description"
+    }}
+  ],
+  "style_notes": "Style guide summary"
+}}
+```"""
+
+        try:
+            response = call_cloud_api(system, prompt, provider, api_key, temperature=0.3)
+            parsed = _parse_json_response(response)
+            bible = StoryTracker.empty_bible()
+            bible["characters"] = parsed.get("characters", {})
+            bible["plot_threads"] = parsed.get("plot_threads", [])
+            bible["style_notes"] = parsed.get("style_notes", "")
+            return bible
+        except Exception as e:
+            # Return empty bible on failure rather than crashing
+            bible = StoryTracker.empty_bible()
+            bible["style_notes"] = f"(Bible init failed: {e})"
+            return bible
+
+    @staticmethod
+    def apply_updates(bible: dict, updates: dict) -> dict:
+        """Apply chapter updates to the bible. (No API call)"""
+        bible = copy.deepcopy(bible)
+
+        # Update character states
+        char_updates = updates.get("characters", {})
+        for name, changes in char_updates.items():
+            if name in bible["characters"]:
+                bible["characters"][name].update(changes)
+            else:
+                bible["characters"][name] = changes
+
+        # Update plot threads
+        thread_updates = updates.get("plot_threads", [])
+        existing_names = {t["name"] for t in bible["plot_threads"]}
+        for thread in thread_updates:
+            if thread["name"] in existing_names:
+                for i, t in enumerate(bible["plot_threads"]):
+                    if t["name"] == thread["name"]:
+                        bible["plot_threads"][i].update(thread)
+                        break
+            else:
+                bible["plot_threads"].append(thread)
+
+        # Add chapter summary
+        if "chapter_summary" in updates:
+            bible.setdefault("chapter_summaries", []).append(updates["chapter_summary"])
+
+        return bible
+
+    @staticmethod
+    def get_context_summary(bible: dict, ch_num: int, lang: str) -> str:
+        """Format bible as compact text for cloud API context. (No API call)"""
+        if not bible or not bible.get("characters"):
+            return ""
+
+        parts = []
+        if lang == "zh":
+            # Characters (compact)
+            chars = []
+            for name, info in bible.get("characters", {}).items():
+                loc = info.get("location", "")
+                emo = info.get("emotional_state", "")
+                chars.append(f"{name}：{loc}，{emo}")
+            if chars:
+                parts.append("【人物状态】" + "；".join(chars))
+
+            # Active plot threads
+            active = [t for t in bible.get("plot_threads", []) if t.get("status") == "active"]
+            if active:
+                threads = "、".join(t["name"] for t in active[:5])
+                parts.append(f"【活跃线索】{threads}")
+
+            # Recent chapter summaries (last 3)
+            summaries = bible.get("chapter_summaries", [])
+            if summaries:
+                recent = summaries[-3:]
+                for s in recent:
+                    ch = s.get("chapter", "?")
+                    text = s.get("summary", "")
+                    parts.append(f"【第{ch}章】{text}")
+        else:
+            chars = []
+            for name, info in bible.get("characters", {}).items():
+                loc = info.get("location", "")
+                emo = info.get("emotional_state", "")
+                chars.append(f"{name}: {loc}, {emo}")
+            if chars:
+                parts.append("[Characters] " + "; ".join(chars))
+
+            active = [t for t in bible.get("plot_threads", []) if t.get("status") == "active"]
+            if active:
+                threads = ", ".join(t["name"] for t in active[:5])
+                parts.append(f"[Active threads] {threads}")
+
+            summaries = bible.get("chapter_summaries", [])
+            if summaries:
+                recent = summaries[-3:]
+                for s in recent:
+                    ch = s.get("chapter", "?")
+                    text = s.get("summary", "")
+                    parts.append(f"[Ch.{ch}] {text}")
+
+        return "\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Mastermind — plans chapters and reviews output
+# ---------------------------------------------------------------------------
+
+class Mastermind:
+    """Plans each chapter (converts outline to prose scene primers) and reviews
+    generated text for quality. Also triggers story bible updates."""
+
+    @staticmethod
+    def _extract_chapter_outline(outline: str, ch_num: int) -> str:
+        """Extract the specific chapter section from the full outline."""
+        pattern = rf'(?:###?\s*(?:第{ch_num}章|Chapter\s*{ch_num})[：:\s]*)(.+?)(?=(?:###?\s*(?:第\d+章|Chapter\s*\d+))|$)'
+        match = re.search(pattern, outline, re.DOTALL)
+        return match.group(0).strip() if match else f"Chapter {ch_num}"
+
+    @staticmethod
+    def plan_chapter(
+        outline: str,
+        ch_num: int,
+        bible: dict,
+        prev_ending: str,
+        provider: str,
+        api_key: str,
+        lang: str,
+    ) -> dict:
+        """Plan a chapter: produce a prose scene primer + writing guidance. (1 API call)
+
+        Returns dict with keys: scene_primer, key_events, guidance
+        """
+        chapter_outline = Mastermind._extract_chapter_outline(outline, ch_num)
+        bible_summary = StoryTracker.get_context_summary(bible, ch_num, lang)
+
+        if lang == "zh":
+            system = (
+                "你是一位资深小说编辑。你的任务是将结构化的章节大纲转化为散文体的场景引子，"
+                "供AI写手作为写作起点。场景引子必须是纯散文，不能包含任何标题、列表、或Markdown格式。"
+            )
+            prompt = f"""请为第{ch_num}章创建写作计划。
+
+【本章大纲】
+{chapter_outline}
+
+【故事圣经】
+{bible_summary if bible_summary else "（首章，无历史记录）"}
+
+【上一章结尾】
+{prev_ending[-800:] if prev_ending else "（首章）"}
+
+请输出JSON格式（必须合法JSON）：
+```json
+{{
+  "scene_primer": "用散文体写一段场景引子（200-400字），描述本章开场的环境、氛围和人物状态。必须是纯叙事散文，不要使用任何标题、列表符号或Markdown格式。",
+  "key_events": ["本章必须包含的关键事件1", "关键事件2", "关键事件3"],
+  "guidance": "给AI写手的具体写作指导：情感基调、节奏建议、需要注意的角色细节"
+}}
+```"""
+        else:
+            system = (
+                "You are a senior fiction editor. Your task is to convert structured chapter outlines "
+                "into prose scene primers for an AI writer. The scene primer MUST be pure prose — "
+                "no headings, no bullet points, no markdown formatting whatsoever."
+            )
+            prompt = f"""Create a writing plan for Chapter {ch_num}.
+
+[Chapter outline]
+{chapter_outline}
+
+[Story bible]
+{bible_summary if bible_summary else "(First chapter, no history)"}
+
+[End of previous chapter]
+{prev_ending[-800:] if prev_ending else "(First chapter)"}
+
+Output as JSON (must be valid JSON):
+```json
+{{
+  "scene_primer": "Write a prose scene primer (150-300 words) describing the chapter's opening environment, atmosphere, and character states. Must be pure narrative prose — no headings, bullet points, or markdown.",
+  "key_events": ["Key event 1 that must happen", "Key event 2", "Key event 3"],
+  "guidance": "Specific writing guidance for the AI: emotional tone, pacing, character details to maintain"
+}}
+```"""
+
+        try:
+            response = call_cloud_api(system, prompt, provider, api_key, temperature=0.7)
+            plan = _parse_json_response(response)
+            # Ensure required keys exist
+            plan.setdefault("scene_primer", chapter_outline)
+            plan.setdefault("key_events", [])
+            plan.setdefault("guidance", "")
+            return plan
+        except Exception as e:
+            # Fallback: use chapter outline as-is
+            return {
+                "scene_primer": chapter_outline,
+                "key_events": [],
+                "guidance": f"(Planning failed: {e})",
+            }
+
+    @staticmethod
+    def review_and_update(
+        plan: dict,
+        text: str,
+        bible: dict,
+        ch_num: int,
+        provider: str,
+        api_key: str,
+        lang: str,
+    ) -> dict:
+        """Review generated chapter AND produce bible updates in one call. (1 API call)
+
+        Returns dict with keys: review (approved, scores, issues, regen_guidance),
+                                bible_updates (characters, plot_threads, chapter_summary)
+        """
+        key_events = ", ".join(plan.get("key_events", []))
+        bible_summary = StoryTracker.get_context_summary(bible, ch_num, lang)
+
+        if lang == "zh":
+            system = (
+                "你同时扮演两个角色：1）小说编辑——审核章节质量；"
+                "2）故事记录员——更新故事圣经。请以JSON格式输出。"
+            )
+            prompt = f"""请审核以下生成的第{ch_num}章，并更新故事圣经。
+
+【写作计划的关键事件】
+{key_events}
+
+【生成的章节文本】（前2000字）
+{text[:3000]}
+
+【当前故事圣经】
+{bible_summary if bible_summary else "（空）"}
+
+请输出JSON格式：
+```json
+{{
+  "review": {{
+    "approved": true,
+    "scores": {{
+      "plot_adherence": 8,
+      "prose_quality": 7,
+      "character_consistency": 8,
+      "engagement": 7
+    }},
+    "issues": ["问题1（如有）"],
+    "regen_guidance": "如果approved为false，给出修改建议"
+  }},
+  "bible_updates": {{
+    "characters": {{
+      "角色名": {{
+        "location": "本章结束时的位置",
+        "emotional_state": "本章结束时的情感状态"
+      }}
+    }},
+    "plot_threads": [
+      {{
+        "name": "线索名称",
+        "status": "active",
+        "latest": "本章最新进展"
+      }}
+    ],
+    "chapter_summary": {{
+      "chapter": {ch_num},
+      "summary": "本章概要（50-100字）"
+    }}
+  }}
+}}
+```"""
+        else:
+            system = (
+                "You play two roles: 1) Fiction editor — review chapter quality; "
+                "2) Story recorder — update the story bible. Output as JSON."
+            )
+            prompt = f"""Review the generated Chapter {ch_num} and update the story bible.
+
+[Writing plan key events]
+{key_events}
+
+[Generated chapter text] (first 2000 words)
+{text[:3000]}
+
+[Current story bible]
+{bible_summary if bible_summary else "(empty)"}
+
+Output as JSON:
+```json
+{{
+  "review": {{
+    "approved": true,
+    "scores": {{
+      "plot_adherence": 8,
+      "prose_quality": 7,
+      "character_consistency": 8,
+      "engagement": 7
+    }},
+    "issues": ["Issue 1 if any"],
+    "regen_guidance": "Guidance for revision if approved is false"
+  }},
+  "bible_updates": {{
+    "characters": {{
+      "Character Name": {{
+        "location": "Location at end of chapter",
+        "emotional_state": "Emotional state at end of chapter"
+      }}
+    }},
+    "plot_threads": [
+      {{
+        "name": "Thread name",
+        "status": "active",
+        "latest": "Latest development in this chapter"
+      }}
+    ],
+    "chapter_summary": {{
+      "chapter": {ch_num},
+      "summary": "Chapter summary (50-100 words)"
+    }}
+  }}
+}}
+```"""
+
+        try:
+            response = call_cloud_api(system, prompt, provider, api_key, temperature=0.3)
+            result = _parse_json_response(response)
+            result.setdefault("review", {
+                "approved": True,
+                "scores": {},
+                "issues": [],
+                "regen_guidance": "",
+            })
+            result.setdefault("bible_updates", {})
+            return result
+        except Exception as e:
+            return {
+                "review": {
+                    "approved": True,
+                    "scores": {},
+                    "issues": [f"Review failed: {e}"],
+                    "regen_guidance": "",
+                },
+                "bible_updates": {
+                    "chapter_summary": {
+                        "chapter": ch_num,
+                        "summary": text[:100] + "...",
+                    }
+                },
+            }
+
+
+# ---------------------------------------------------------------------------
+# Prompt Builder — enforces token budget for local model
+# ---------------------------------------------------------------------------
+
+class PromptBuilder:
+    """Builds prompts for the local model that fit within the 4096 token
+    training budget. Uses instruction + prose context format matching training."""
+
+    @staticmethod
+    def build_chapter_prompt(
+        instruction: str,
+        scene_primer: str,
+        prev_text: str,
+        max_new_tokens: int,
+        lang: str,
+    ) -> tuple:
+        """Build a prompt within token budget.
+
+        Returns (system_prompt, user_content, token_info_dict)
+        """
+        system = ZH_SYSTEM if lang == "zh" else EN_SYSTEM
+        system_tokens = count_tokens(system)
+        instruction_tokens = count_tokens(instruction)
+        template_overhead = 15  # chat template special tokens
+
+        # Sanitize primer: strip any markdown that the cloud API may have included
+        scene_primer = re.sub(r'^#+\s.*$', '', scene_primer, flags=re.MULTILINE)
+        scene_primer = re.sub(r'^\s*[-*]\s+', '', scene_primer, flags=re.MULTILINE)
+        scene_primer = re.sub(r'\*\*([^*]+)\*\*', r'\1', scene_primer)
+        scene_primer = scene_primer.strip()
+
+        # Available budget for scene primer + narrative context
+        available = (
+            MAX_SEQ_LENGTH
+            - system_tokens
+            - instruction_tokens
+            - template_overhead
+            - max_new_tokens
+        )
+        available = max(available, 100)  # safety floor
+
+        # Split: ~1/3 for primer, ~2/3 for narrative context
+        primer_budget = min(count_tokens(scene_primer), available // 3)
+        context_budget = available - primer_budget
+
+        trimmed_primer = trim_to_token_budget(scene_primer, primer_budget, keep_end=False)
+        trimmed_context = trim_to_token_budget(prev_text, context_budget, keep_end=True)
+
+        # Build user content: instruction + prose (matches training format)
+        parts = [instruction]
+        if trimmed_primer:
+            parts.append(trimmed_primer)
+        if trimmed_context:
+            parts.append(trimmed_context)
+        user_content = "\n\n".join(parts)
+
+        user_tokens = count_tokens(user_content)
+        total = system_tokens + user_tokens + template_overhead + max_new_tokens
+
+        return system, user_content, {
+            "system_tokens": system_tokens,
+            "user_tokens": user_tokens,
+            "max_new_tokens": max_new_tokens,
+            "total_estimated": total,
+            "within_budget": total <= MAX_SEQ_LENGTH,
+        }
+
+
+# ---------------------------------------------------------------------------
+# Multi-pass chapter generation (local model)
+# ---------------------------------------------------------------------------
+
+def generate_chapter_multipass(
+    scene_primer: str,
+    prev_text: str,
+    num_passes: int,
+    tokens_per_pass: int,
+    lang: str,
+    temperature: float,
+    top_p: float,
+    use_cloud: bool = False,
+    cloud_provider: str = "",
+    cloud_api_key: str = "",
+) -> tuple:
+    """Generate chapter text in multiple passes with sliding context.
+
+    When use_cloud=True, uses cloud API instead of local model (no GPU needed).
+    Returns (accumulated_text, pass_log_list)
+    """
+    instructions = _ZH_INSTRUCTIONS if lang == "zh" else _EN_INSTRUCTIONS
+    builder = PromptBuilder()
+    accumulated = ""
+    pass_log = []
+
+    for i in range(num_passes):
+        instruction = random.choice(instructions)
+
+        if i == 0:
+            context = prev_text[-1200:] if prev_text else ""
+            primer = scene_primer
+        else:
+            # Sliding context: use end of accumulated text
+            context = accumulated[-1000:]
+            primer = ""  # Only use primer for first pass
+
+        system, user_content, token_info = builder.build_chapter_prompt(
+            instruction, primer, context, tokens_per_pass, lang,
+        )
+
+        if use_cloud:
+            result = generate_text_cloud(
+                user_content,
+                system_prompt=system,
+                max_new_tokens=tokens_per_pass,
+                temperature=temperature,
+                provider=cloud_provider,
+                api_key=cloud_api_key,
+            )
+        else:
+            result = generate_text(
+                user_content,
+                system_prompt=system,
+                max_new_tokens=tokens_per_pass,
+                temperature=temperature,
+                top_p=top_p,
+                repetition_penalty=1.0,  # Match training (no penalty during training)
+            )
+
+        accumulated += result
+        mode_label = "cloud" if use_cloud else "local"
+        pass_log.append(
+            f"Pass {i+1}/{num_passes} ({mode_label}): +{len(result)} chars "
+            f"({token_info['total_estimated']}/{MAX_SEQ_LENGTH} tokens used)"
+        )
+
+    return accumulated, pass_log
+
+
+# ---------------------------------------------------------------------------
+# Legacy chapter generation (fallback when agents disabled)
+# ---------------------------------------------------------------------------
+
+def generate_chapter_legacy(
     plot_outline: str,
     chapter_num: int,
     previous_text: str,
@@ -422,14 +1214,18 @@ def generate_chapter(
     repetition_penalty: float,
     progress=gr.Progress(),
 ):
-    """Generate a single chapter using the local fine-tuned model."""
+    """Generate a single chapter using the local fine-tuned model (legacy mode).
+
+    This is the original generate_chapter — kept as fallback when agents are disabled.
+    Note: this sends the full outline to the model, which is out-of-distribution
+    for the training format. Use agent mode for better results.
+    """
     if _model is None:
         return "Please load a local model first (Model Settings above)."
 
     lang = detect_language(plot_outline)
     progress(0.1, desc=f"Generating chapter {chapter_num}...")
 
-    # Extract the specific chapter outline
     chapter_pattern = rf"(?:###?\s*(?:第{chapter_num}章|Chapter\s*{chapter_num})[：:\s]*)(.+?)(?=(?:###?\s*(?:第\d+章|Chapter\s*\d+))|$)"
     match = re.search(chapter_pattern, plot_outline, re.DOTALL)
     chapter_outline = match.group(0).strip() if match else f"Chapter {chapter_num}"
@@ -484,6 +1280,175 @@ def generate_chapter(
     return result
 
 
+# ---------------------------------------------------------------------------
+# Full pipeline: agents + local model
+# ---------------------------------------------------------------------------
+
+def generate_chapter_pipeline(
+    outline: str,
+    ch_num: int,
+    chapters_state: str,
+    style_notes: str,
+    max_tokens: int,
+    temperature: float,
+    top_p: float,
+    repetition_penalty: float,
+    enable_agents: bool,
+    num_passes: int,
+    api_provider: str,
+    api_key: str,
+    bible_state: dict,
+    writer_mode: str = "Local Model",
+    progress=gr.Progress(),
+):
+    """Full chapter generation pipeline.
+
+    writer_mode: "Local Model" or "Cloud API"
+    When agents enabled: Tracker -> Mastermind plan -> multi-pass gen -> review -> bible update
+    When agents disabled: Legacy single-pass generation
+
+    Returns (chapter_text, updated_all_chapters, updated_bible, generation_log, review_text)
+    """
+    use_cloud = writer_mode == "Cloud API"
+
+    if not use_cloud and _model is None:
+        msg = "Please load a local model first (Model Settings above), or switch Writer Mode to 'Cloud API'."
+        return msg, chapters_state, bible_state, msg, ""
+
+    if use_cloud and not api_key.strip():
+        msg = "Cloud writer mode requires an API key. Please enter it in API Settings above."
+        return msg, chapters_state, bible_state, msg, ""
+
+    ch_num = int(ch_num)
+    lang = detect_language(outline)
+
+    # ---- Legacy mode (local model only, no agents) ----
+    if not enable_agents:
+        if use_cloud:
+            msg = "Legacy mode requires a local model. Please enable agents for cloud-only writing."
+            return msg, chapters_state, bible_state, msg, ""
+        if not api_key.strip():
+            pass  # Legacy mode doesn't need API key
+        progress(0.1, desc=f"Generating chapter {ch_num} (legacy mode)...")
+        result = generate_chapter_legacy(
+            outline, ch_num, chapters_state, style_notes,
+            max_tokens, temperature, top_p, repetition_penalty, progress,
+        )
+        sep = f"\n\n{'='*40}\n第{ch_num}章 / Chapter {ch_num}\n{'='*40}\n\n"
+        new_acc = chapters_state + sep + result if chapters_state else result
+        log = "Legacy mode (agents disabled).\n"
+        log += f"Generated {len(result)} chars."
+        return result, new_acc, bible_state, log, ""
+
+    # Agents require API key
+    if not api_key.strip():
+        msg = "Agent mode requires an API key. Please enter it in API Settings above."
+        return msg, chapters_state, bible_state, msg, ""
+
+    # ---- Agent mode ----
+    log_lines = []
+
+    def log(msg):
+        log_lines.append(f"[{time.strftime('%H:%M:%S')}] {msg}")
+
+    mode_label = "cloud" if use_cloud else "local"
+    log(f"Writer mode: {mode_label}")
+
+    # Step 1: Initialize bible if needed
+    if not bible_state or not bible_state.get("characters"):
+        log("Initializing story bible from outline...")
+        progress(0.05, desc="Initializing story bible...")
+        bible_state = StoryTracker.initialize_from_outline(
+            outline, api_provider, api_key, lang,
+        )
+        n_chars = len(bible_state.get("characters", {}))
+        n_threads = len(bible_state.get("plot_threads", []))
+        log(f"Bible initialized: {n_chars} characters, {n_threads} plot threads")
+
+    # Step 2: Mastermind plans the chapter
+    log(f"Mastermind planning chapter {ch_num}...")
+    progress(0.15, desc="Mastermind planning chapter...")
+    prev_ending = chapters_state[-1200:] if chapters_state else ""
+    plan = Mastermind.plan_chapter(
+        outline, ch_num, bible_state, prev_ending,
+        api_provider, api_key, lang,
+    )
+    primer_preview = plan["scene_primer"][:150].replace("\n", " ")
+    log(f"Scene primer: {primer_preview}...")
+    if plan["key_events"]:
+        log(f"Key events: {', '.join(plan['key_events'][:3])}")
+    if plan.get("guidance"):
+        log(f"Guidance: {plan['guidance'][:100]}...")
+
+    # Step 3: Multi-pass generation
+    tokens_per_pass = min(max_tokens // num_passes, 1500)
+    if tokens_per_pass < 512:
+        log(f"Warning: tokens_per_pass ({tokens_per_pass}) below minimum 512, clamping up")
+        tokens_per_pass = 512
+    log(f"Generating chapter ({num_passes} passes, {tokens_per_pass} tokens/pass, {mode_label})...")
+    progress(0.3, desc=f"Writing chapter ({num_passes} passes, {mode_label})...")
+
+    result, pass_log = generate_chapter_multipass(
+        plan["scene_primer"], prev_ending, num_passes, tokens_per_pass,
+        lang, temperature, top_p,
+        use_cloud=use_cloud, cloud_provider=api_provider, cloud_api_key=api_key,
+    )
+    for pl in pass_log:
+        log(pl)
+    log(f"Total generated: {len(result)} chars")
+
+    # Step 4: Review + update bible (combined, 1 API call)
+    log("Reviewing chapter + updating story bible...")
+    progress(0.85, desc="Reviewing chapter...")
+    review_result = Mastermind.review_and_update(
+        plan, result, bible_state, ch_num,
+        api_provider, api_key, lang,
+    )
+
+    review = review_result.get("review", {})
+    bible_updates = review_result.get("bible_updates", {})
+
+    # Apply bible updates
+    bible_state = StoryTracker.apply_updates(bible_state, bible_updates)
+
+    # Format review text
+    approved = review.get("approved", True)
+    scores = review.get("scores", {})
+    issues = review.get("issues", [])
+
+    status = "APPROVED" if approved else "NEEDS REVISION"
+    log(f"Review: {status}")
+    if scores:
+        score_str = ", ".join(f"{k}: {v}/10" for k, v in scores.items())
+        log(f"Scores: {score_str}")
+    if issues:
+        for issue in issues:
+            log(f"Issue: {issue}")
+
+    review_text = f"Status: {status}\n"
+    if scores:
+        review_text += "Scores:\n"
+        for k, v in scores.items():
+            review_text += f"  {k}: {v}/10\n"
+    if issues:
+        review_text += "Issues:\n"
+        for issue in issues:
+            review_text += f"  - {issue}\n"
+    if not approved and review.get("regen_guidance"):
+        review_text += f"\nRevision guidance: {review['regen_guidance']}\n"
+
+    # Accumulate
+    sep = f"\n\n{'='*40}\n第{ch_num}章 / Chapter {ch_num}\n{'='*40}\n\n"
+    new_acc = chapters_state + sep + result if chapters_state else result
+
+    progress(1.0, desc="Chapter complete!")
+    return result, new_acc, bible_state, "\n".join(log_lines), review_text
+
+
+# ---------------------------------------------------------------------------
+# Continue writing (direct, local model)
+# ---------------------------------------------------------------------------
+
 def continue_writing(
     existing_text: str,
     instruction: str,
@@ -491,10 +1456,17 @@ def continue_writing(
     temperature: float,
     top_p: float,
     repetition_penalty: float,
+    writer_mode: str = "Local Model",
+    api_provider: str = "Gemini",
+    api_key: str = "",
 ):
-    """Continue writing from existing text using local model."""
-    if _model is None:
-        return "Please load a local model first (Model Settings above)."
+    """Continue writing from existing text using local model or cloud API."""
+    use_cloud = writer_mode == "Cloud API"
+
+    if not use_cloud and _model is None:
+        return "Please load a local model first, or switch Writer Mode to 'Cloud API'."
+    if use_cloud and not api_key.strip():
+        return "Cloud writer mode requires an API key. Please enter it in API Settings."
 
     lang = detect_language(existing_text)
     if not instruction:
@@ -502,10 +1474,17 @@ def continue_writing(
 
     prompt = instruction + "\n\n" + existing_text
     system = ZH_SYSTEM if lang == "zh" else EN_SYSTEM
-    return generate_text(
-        prompt, system_prompt=system, max_new_tokens=max_tokens,
-        temperature=temperature, top_p=top_p, repetition_penalty=repetition_penalty,
-    )
+
+    if use_cloud:
+        return generate_text_cloud(
+            prompt, system_prompt=system, max_new_tokens=max_tokens,
+            temperature=temperature, provider=api_provider, api_key=api_key,
+        )
+    else:
+        return generate_text(
+            prompt, system_prompt=system, max_new_tokens=max_tokens,
+            temperature=temperature, top_p=top_p, repetition_penalty=repetition_penalty,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -521,21 +1500,26 @@ def build_ui():
     _css = """
     .chapter-output { min-height: 400px; }
     .plot-output { min-height: 300px; }
+    .gen-log { font-family: monospace; font-size: 0.85em; }
     footer { display: none !important; }
     """
 
     with gr.Blocks(title="Novel Writer Studio") as app:
         gr.Markdown("# Novel Writer Studio")
         gr.Markdown(
-            "*Cloud AI (Gemini / GPT) develops your story outline — "
-            "your fine-tuned local model writes the chapters*"
+            "*Cloud AI (Gemini / GPT) develops your story outline and orchestrates agents. "
+            "Chapters can be written by your fine-tuned local model OR entirely via cloud API (no GPU needed).*"
         )
 
+        # ---- Shared state ----
+        all_chapters = gr.State("")
+        bible_state = gr.State({})
+
         # ---- API Settings ----
-        with gr.Accordion("API Settings (for Plot Generation)", open=True):
+        with gr.Accordion("API Settings (for Plot & Agents)", open=True):
             gr.Markdown(
-                "Plot outlines are generated by Gemini or GPT for best quality. "
-                "Enter your API key below. Keys are only used in-memory and never stored."
+                "Enter your API key. Used for plot generation AND agent orchestration "
+                "(Mastermind planning, story tracking, chapter review)."
             )
             with gr.Row():
                 api_provider = gr.Radio(
@@ -578,9 +1562,28 @@ def build_ui():
 
             api_key_input.change(check_api, [api_provider, api_key_input], api_status)
 
+        # ---- Writer Mode ----
+        with gr.Accordion("Writer Mode", open=True):
+            gr.Markdown(
+                "**Local Model**: Uses your fine-tuned LoRA model (requires GPU). "
+                "Best quality for style-specific prose.\n\n"
+                "**Cloud API**: Uses Gemini/GPT for chapter writing too. "
+                "No GPU needed — runs entirely on your Mac. "
+                "Loses LoRA style but keeps all agent features (planning, review, story bible)."
+            )
+            writer_mode = gr.Radio(
+                choices=["Local Model", "Cloud API"],
+                value="Cloud API",
+                label="Chapter Writer",
+                info="Choose what writes the chapter prose",
+            )
+
         # ---- Local Model Settings ----
-        with gr.Accordion("Local Model Settings (for Chapter Writing)", open=False):
-            gr.Markdown("Load your fine-tuned LoRA model for chapter generation.")
+        with gr.Accordion("Local Model Settings (optional for Cloud API mode)", open=False):
+            gr.Markdown(
+                "Load your fine-tuned LoRA model for chapter generation. "
+                "**Only needed if Writer Mode is 'Local Model'.**"
+            )
             with gr.Row():
                 with gr.Column(scale=2):
                     lora_dropdown = gr.Dropdown(
@@ -609,14 +1612,36 @@ def build_ui():
             lora_dropdown.change(update_base_info, lora_dropdown, base_model_info)
             load_btn.click(load_model_fn, [lora_dropdown, load_4bit], model_status)
 
-        # ---- Generation settings ----
+        # ---- Agent Settings ----
+        with gr.Accordion("Agent Settings", open=False):
+            gr.Markdown(
+                "**Multi-Agent System**: Cloud API agents (Mastermind + Story Tracker) "
+                "orchestrate chapter generation for better plot adherence, continuity, and quality.\n\n"
+                "- **Mastermind**: Converts outline to prose scene primers, reviews output\n"
+                "- **Story Tracker**: Maintains character states, plot threads, chapter summaries\n"
+                "- Uses 2-3 cloud API calls per chapter"
+            )
+            with gr.Row():
+                enable_agents = gr.Checkbox(
+                    value=True,
+                    label="Enable Agents",
+                    info="Use Mastermind + Story Tracker for chapter generation",
+                )
+                num_passes = gr.Slider(
+                    1, 5, value=3, step=1,
+                    label="Generation Passes",
+                    info="More passes = longer chapters (each pass ~1000-1500 chars)",
+                )
+
+        # ---- Chapter Generation Settings ----
         with gr.Accordion("Chapter Generation Settings", open=False):
             with gr.Row():
                 max_tokens_slider = gr.Slider(128, 4096, value=2048, step=128, label="Max New Tokens")
                 temperature_slider = gr.Slider(0.1, 2.0, value=0.8, step=0.05, label="Temperature")
             with gr.Row():
                 top_p_slider = gr.Slider(0.1, 1.0, value=0.9, step=0.05, label="Top-P")
-                rep_penalty_slider = gr.Slider(1.0, 2.0, value=1.1, step=0.05, label="Repetition Penalty")
+                rep_penalty_slider = gr.Slider(1.0, 2.0, value=1.0, step=0.05, label="Repetition Penalty",
+                                               info="1.0 recommended (matches training). Higher values cause unnatural word avoidance.")
 
         # ---- Tabs ----
         with gr.Tabs():
@@ -636,7 +1661,7 @@ def build_ui():
                             lines=4,
                         )
                     with gr.Column(scale=1):
-                        num_chapters = gr.Slider(3, 20, value=8, step=1, label="Chapters")
+                        num_chapters_slider = gr.Slider(3, 20, value=8, step=1, label="Chapters")
                         develop_btn = gr.Button(
                             "Develop Plot (Cloud AI)", variant="primary", size="lg",
                         )
@@ -655,15 +1680,16 @@ def build_ui():
 
                 develop_btn.click(
                     develop_plot_api,
-                    [story_idea, num_chapters, api_provider, api_key_input],
+                    [story_idea, num_chapters_slider, api_provider, api_key_input],
                     plot_outline,
                 )
 
                 gr.Markdown("---")
-                gr.Markdown("### Step 3: Generate Chapters (Local Model)")
+                gr.Markdown("### Step 3: Generate Chapters")
                 gr.Markdown(
-                    "Uses your fine-tuned LoRA model to write each chapter "
-                    "in the trained literary style. Make sure the local model is loaded above."
+                    "Writes each chapter using your chosen Writer Mode (local model or cloud API). "
+                    "Enable agents for cloud-orchestrated multi-pass generation with "
+                    "plot tracking and quality review."
                 )
                 with gr.Row():
                     with gr.Column(scale=1):
@@ -674,7 +1700,7 @@ def build_ui():
                             lines=2,
                         )
                         gen_chapter_btn = gr.Button(
-                            "Generate Chapter (Local)", variant="primary", size="lg",
+                            "Generate Chapter", variant="primary", size="lg",
                         )
                     with gr.Column(scale=3):
                         chapter_output = gr.Textbox(
@@ -683,21 +1709,35 @@ def build_ui():
                             elem_classes=["chapter-output"],
                         )
 
-                all_chapters = gr.State("")
+                # ---- Generation Log ----
+                with gr.Accordion("Generation Log", open=False):
+                    gen_log_display = gr.Textbox(
+                        label="Agent Activity Log",
+                        lines=12,
+                        interactive=False,
+                        elem_classes=["gen-log"],
+                    )
 
-                def gen_and_accumulate(outline, ch_num, prev, style, max_t, temp, tp, rp, progress=gr.Progress()):
-                    result = generate_chapter(outline, ch_num, prev, style, max_t, temp, tp, rp, progress)
-                    sep = f"\n\n{'='*40}\n第{int(ch_num)}章 / Chapter {int(ch_num)}\n{'='*40}\n\n"
-                    new_acc = prev + sep + result if prev else result
-                    return result, new_acc
+                # ---- Review Results ----
+                with gr.Accordion("Chapter Review", open=False):
+                    review_display = gr.Textbox(
+                        label="Mastermind Review",
+                        lines=8,
+                        interactive=False,
+                    )
 
                 gen_chapter_btn.click(
-                    gen_and_accumulate,
-                    [plot_outline, chapter_num, all_chapters, style_notes,
-                     max_tokens_slider, temperature_slider, top_p_slider, rep_penalty_slider],
-                    [chapter_output, all_chapters],
+                    generate_chapter_pipeline,
+                    [
+                        plot_outline, chapter_num, all_chapters, style_notes,
+                        max_tokens_slider, temperature_slider, top_p_slider, rep_penalty_slider,
+                        enable_agents, num_passes, api_provider, api_key_input, bible_state,
+                        writer_mode,
+                    ],
+                    [chapter_output, all_chapters, bible_state, gen_log_display, review_display],
                 )
 
+                # ---- All Chapters ----
                 with gr.Accordion("All Generated Chapters", open=False):
                     all_chapters_display = gr.Textbox(
                         label="Full Story So Far", lines=30, interactive=False,
@@ -720,10 +1760,64 @@ def build_ui():
 
                     export_btn.click(export_story, all_chapters, export_status)
 
-            # ===== Tab 2: Free Write =====
+            # ===== Tab 2: Story Bible =====
+            with gr.Tab("Story Bible"):
+                gr.Markdown(
+                    "### Story Bible\n"
+                    "The story bible tracks character states, plot threads, and chapter summaries "
+                    "for continuity across chapters. It is automatically maintained by the Story Tracker agent."
+                )
+                bible_display = gr.JSON(label="Current Story Bible")
+                with gr.Row():
+                    refresh_bible_btn = gr.Button("Refresh Display")
+                    init_bible_btn = gr.Button("Initialize Bible from Outline", variant="primary")
+                    clear_bible_btn = gr.Button("Clear Bible", variant="stop")
+
+                bible_manual_notes = gr.Textbox(
+                    label="Manual Notes (added to style_notes)",
+                    placeholder="Add your own notes here (e.g., 'the sword is named Frostbite')",
+                    lines=3,
+                )
+                add_notes_btn = gr.Button("Add Notes to Bible")
+                bible_status = gr.Textbox(label="Status", interactive=False, lines=1)
+
+                def refresh_bible(bible):
+                    return bible
+
+                def init_bible_from_outline(outline, provider, key, bible):
+                    if not outline.strip():
+                        return bible, bible, "No outline to initialize from."
+                    if not key.strip():
+                        return bible, bible, f"Please enter your {provider} API key."
+                    lang = detect_language(outline)
+                    new_bible = StoryTracker.initialize_from_outline(outline, provider, key, lang)
+                    n_chars = len(new_bible.get("characters", {}))
+                    return new_bible, new_bible, f"Bible initialized: {n_chars} characters found."
+
+                def clear_bible():
+                    return StoryTracker.empty_bible()
+
+                def add_manual_notes(bible, notes):
+                    if not notes.strip():
+                        return bible
+                    bible = copy.deepcopy(bible)
+                    existing = bible.get("style_notes", "")
+                    bible["style_notes"] = (existing + "\n" + notes).strip() if existing else notes
+                    return bible
+
+                refresh_bible_btn.click(refresh_bible, bible_state, bible_display)
+                init_bible_btn.click(
+                    init_bible_from_outline,
+                    [plot_outline, api_provider, api_key_input, bible_state],
+                    [bible_state, bible_display, bible_status],
+                )
+                clear_bible_btn.click(clear_bible, outputs=bible_state)
+                add_notes_btn.click(add_manual_notes, [bible_state, bible_manual_notes], bible_state)
+
+            # ===== Tab 3: Free Write =====
             with gr.Tab("Free Write"):
-                gr.Markdown("### Direct Generation (Local Model)")
-                gr.Markdown("Write freely — provide context for continuation or start fresh.")
+                gr.Markdown("### Direct Generation")
+                gr.Markdown("Write freely — provide context for continuation or start fresh. Uses your chosen Writer Mode.")
 
                 with gr.Row():
                     with gr.Column():
@@ -745,7 +1839,8 @@ def build_ui():
                 free_gen_btn.click(
                     continue_writing,
                     [free_context, free_instruction,
-                     max_tokens_slider, temperature_slider, top_p_slider, rep_penalty_slider],
+                     max_tokens_slider, temperature_slider, top_p_slider, rep_penalty_slider,
+                     writer_mode, api_provider, api_key_input],
                     free_output,
                 )
 
@@ -754,9 +1849,10 @@ def build_ui():
 
                 append_btn.click(append_to_context, [free_context, free_output], free_context)
 
-            # ===== Tab 3: Quick Test =====
+            # ===== Tab 4: Quick Test =====
             with gr.Tab("Quick Test"):
-                gr.Markdown("### Test the local model with a single prompt")
+                gr.Markdown("### Test with a single prompt")
+                gr.Markdown("Uses your chosen Writer Mode (local model or cloud API).")
                 test_prompt = gr.Textbox(
                     label="Prompt",
                     placeholder="月色如霜，照在悬崖边两道对峙的身影上...",
@@ -769,13 +1865,19 @@ def build_ui():
                 test_btn = gr.Button("Generate", variant="primary")
                 test_output = gr.Textbox(label="Output", lines=15)
 
-                def run_quick_test(prompt, sys_prompt, max_t, temp, tp, rp):
+                def run_quick_test(prompt, sys_prompt, max_t, temp, tp, rp, wmode, provider, key):
+                    if wmode == "Cloud API":
+                        return generate_text_cloud(
+                            prompt, system_prompt=sys_prompt, max_new_tokens=max_t,
+                            temperature=temp, provider=provider, api_key=key,
+                        )
                     return generate_text(prompt, sys_prompt, max_t, temp, tp, 50, rp)
 
                 test_btn.click(
                     run_quick_test,
                     [test_prompt, test_system,
-                     max_tokens_slider, temperature_slider, top_p_slider, rep_penalty_slider],
+                     max_tokens_slider, temperature_slider, top_p_slider, rep_penalty_slider,
+                     writer_mode, api_provider, api_key_input],
                     test_output,
                 )
 
