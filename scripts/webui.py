@@ -582,6 +582,82 @@ def get_base_model_name(lora_base: str) -> str:
     return mapping.get(lora_base, lora_base)
 
 
+def upload_lora_zip(zip_file) -> str:
+    """Upload and extract a LoRA adapter from a zip file into models/ directory."""
+    import zipfile
+    if zip_file is None:
+        return "No file uploaded."
+    zip_path = zip_file.name if hasattr(zip_file, "name") else str(zip_file)
+    if not zip_path.endswith(".zip"):
+        return "Please upload a .zip file containing your LoRA adapter."
+    MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        with zipfile.ZipFile(zip_path, "r") as z:
+            # Find the adapter_config.json to determine folder structure
+            adapter_configs = [n for n in z.namelist() if n.endswith("adapter_config.json")]
+            if not adapter_configs:
+                return "No adapter_config.json found in zip. Make sure your zip contains a valid LoRA adapter."
+            # Determine the top-level folder name
+            config_path = adapter_configs[0]
+            parts = config_path.split("/")
+            if len(parts) > 1:
+                # Files are inside a subfolder — extract normally
+                z.extractall(MODELS_DIR)
+                folder_name = parts[0]
+            else:
+                # Files are at the root of zip — create a folder from zip filename
+                folder_name = Path(zip_path).stem
+                dest = MODELS_DIR / folder_name
+                dest.mkdir(exist_ok=True)
+                for member in z.namelist():
+                    # Extract flat files into the named folder
+                    if not member.endswith("/"):
+                        data = z.read(member)
+                        (dest / Path(member).name).write_bytes(data)
+        adapter_path = MODELS_DIR / folder_name
+        if (adapter_path / "adapter_config.json").exists():
+            cfg = json.loads((adapter_path / "adapter_config.json").read_text())
+            base = cfg.get("base_model_name_or_path", "unknown")
+            return f"Uploaded: {folder_name}\nBase model: {base}\nPath: {adapter_path}"
+        return f"Extracted to {adapter_path}, but adapter_config.json not found at expected location."
+    except Exception as e:
+        return f"Upload failed: {e}"
+
+
+def download_lora_hf(repo_id: str, progress=gr.Progress()) -> str:
+    """Download a LoRA adapter from Hugging Face Hub into models/ directory."""
+    if not repo_id or not repo_id.strip():
+        return "Please enter a Hugging Face repo ID (e.g., username/model_name)."
+    repo_id = repo_id.strip()
+    MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    folder_name = repo_id.split("/")[-1]
+    dest = MODELS_DIR / folder_name
+    try:
+        from huggingface_hub import snapshot_download
+        progress(0.1, desc=f"Downloading {repo_id}...")
+        snapshot_download(repo_id=repo_id, local_dir=str(dest))
+        progress(1.0, desc="Download complete!")
+        if (dest / "adapter_config.json").exists():
+            cfg = json.loads((dest / "adapter_config.json").read_text())
+            base = cfg.get("base_model_name_or_path", "unknown")
+            return f"Downloaded: {folder_name}\nBase model: {base}\nPath: {dest}"
+        return f"Downloaded to {dest}, but no adapter_config.json found. Is this a LoRA adapter repo?"
+    except ImportError:
+        return "huggingface_hub not installed. Run: pip install huggingface_hub"
+    except Exception as e:
+        return f"Download failed: {e}"
+
+
+def refresh_lora_list():
+    """Rescan models/ directory and return updated adapter list."""
+    adapters = scan_lora_adapters()
+    names = [a["name"] for a in adapters] if adapters else ["No adapters found"]
+    info = {a["name"]: a["base_model"] for a in adapters}
+    first = names[0] if adapters else None
+    base = info.get(first, "") if first else ""
+    return names, first, base, info
+
+
 def load_model_fn(lora_choice: str, load_in_4bit: bool, progress=gr.Progress()):
     """Load a model + LoRA adapter."""
     global _model, _tokenizer, _model_name
@@ -1730,6 +1806,9 @@ def build_ui():
                 "Load your fine-tuned LoRA model for chapter generation. "
                 "**Only needed if Writer Mode is 'Local Model'.**"
             )
+            # Hidden state to track adapter_info dict
+            adapter_info_state = gr.State(adapter_info)
+
             with gr.Row():
                 with gr.Column(scale=2):
                     lora_dropdown = gr.Dropdown(
@@ -1752,11 +1831,48 @@ def build_ui():
                     load_btn = gr.Button("Load Model", variant="primary", size="lg")
                     model_status = gr.Textbox(label="Status", interactive=False, lines=3)
 
-            def update_base_info(choice):
-                return adapter_info.get(choice, "unknown")
+            def update_base_info(choice, info):
+                return info.get(choice, "unknown") if info else "unknown"
 
-            lora_dropdown.change(update_base_info, lora_dropdown, base_model_info)
+            lora_dropdown.change(update_base_info, [lora_dropdown, adapter_info_state], base_model_info)
             load_btn.click(load_model_fn, [lora_dropdown, load_4bit], model_status)
+
+            gr.Markdown("---")
+            gr.Markdown("**Upload LoRA Adapter** — upload a zip or download from Hugging Face Hub")
+            with gr.Row():
+                with gr.Column(scale=1):
+                    lora_zip_upload = gr.File(
+                        label="Upload LoRA (.zip)",
+                        file_types=[".zip"],
+                        type="filepath",
+                    )
+                    upload_btn = gr.Button("Upload & Extract", variant="secondary")
+                with gr.Column(scale=1):
+                    hf_repo_input = gr.Textbox(
+                        label="Hugging Face Repo ID",
+                        placeholder="username/qwen3_32b_novel_lora",
+                    )
+                    hf_download_btn = gr.Button("Download from HF Hub", variant="secondary")
+            upload_status = gr.Textbox(label="Upload Status", interactive=False, lines=3)
+            refresh_adapters_btn = gr.Button("Refresh Adapter List", variant="secondary")
+
+            def handle_zip_upload(zip_file):
+                result = upload_lora_zip(zip_file)
+                return result
+
+            def handle_hf_download(repo_id, progress=gr.Progress()):
+                return download_lora_hf(repo_id, progress)
+
+            def handle_refresh():
+                names, first, base, info = refresh_lora_list()
+                return gr.update(choices=names, value=first), base, info, f"Found {len(info)} adapter(s)."
+
+            upload_btn.click(handle_zip_upload, [lora_zip_upload], upload_status)
+            hf_download_btn.click(handle_hf_download, [hf_repo_input], upload_status)
+            refresh_adapters_btn.click(
+                handle_refresh, [],
+                [lora_dropdown, base_model_info, adapter_info_state, upload_status],
+            )
 
         # ---- Agent Settings ----
         with gr.Accordion("Agent Settings", open=False):
