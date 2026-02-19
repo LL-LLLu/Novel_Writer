@@ -194,15 +194,22 @@ def trim_to_token_budget(text: str, max_tokens: int, keep_end: bool = True) -> s
 # Cloud API: plot generation
 # ---------------------------------------------------------------------------
 
-def _build_plot_prompt(idea: str, num_chapters: int, lang: str) -> tuple[str, str]:
-    """Build the system prompt and user prompt for plot development."""
+def _build_plot_prompt(idea: str, target_chapters: int, lang: str) -> tuple[str, str]:
+    """Build the system prompt and user prompt for plot development.
+
+    Generates a high-level story structure with acts/arcs rather than
+    chapter-by-chapter outlines. The user can edit the outline and the
+    Mastermind agent will plan individual chapters from it.
+    """
     if lang == "zh":
         system = (
-            "你是一位资深的小说策划编辑和故事架构师。你擅长从简单的故事构思中发展出完整、"
-            "引人入胜的小说大纲。你的大纲应该包含极其丰富的细节，足以直接指导AI模型逐章生成高质量的小说内容。"
-            "每个章节的大纲都应该详细到可以独立作为写作指南。"
+            "你是一位资深的小说策划编辑和故事架构师。你擅长从简单的故事构思中发展出宏大、"
+            "引人入胜的长篇小说大纲。你的大纲以故事弧线和幕（Act）为结构单位——不要逐章列举。"
+            "大纲应包含极其丰富的细节：人物关系网、世界观设定、核心冲突的多层递进、"
+            "以及每个故事弧线中的关键转折点。这份大纲将作为AI逐章生成小说的总蓝图。"
         )
-        prompt = f"""请基于以下故事构思，创作一个非常详细的小说大纲：
+        prompt = f"""请基于以下故事构思，创作一个宏大而详细的长篇小说大纲。
+目标篇幅：约{target_chapters}章的长篇故事。
 
 故事构思：{idea}
 
@@ -212,50 +219,91 @@ def _build_plot_prompt(idea: str, num_chapters: int, lang: str) -> tuple[str, st
 [一个引人入胜的标题]
 
 ## 故事背景
-[详细的世界观和背景设定，至少200字。包括：时代背景、地理环境、社会体制、文化风俗、特殊设定（如武功体系、魔法规则等）]
+[详细的世界观和背景设定，至少300字。包括：时代背景、地理环境、社会体制、文化风俗、历史渊源、特殊设定（如武功体系、魔法规则、科技水平等）。要有层次感——大世界背景、故事发生的具体区域、以及主角的生活圈]
 
 ## 主要人物
-（至少4个主要角色，每个角色需包含详细信息）
-- **[角色全名]**（[年龄/外貌简述]）：[性格特点——至少3个性格关键词]，[身份背景——家族/门派/职业]，[核心动机——驱动角色行动的内在欲望]，[人物弧光——角色在故事中的成长变化轨迹]，[与其他角色的关键关系]
+（至少6个角色：主角、对手、盟友、导师、情感关联角色、关键配角）
+- **[角色全名]**（[年龄/外貌简述]）：[性格特点——至少3个关键词]，[身份背景]，[核心动机]，[人物弧光——从故事开始到结束的完整变化轨迹]，[秘密或隐藏面]，[关键人际关系]
+
+## 人物关系网
+[用文字描述主要人物之间的关系图谱：谁和谁是盟友/对手/师徒/恋人/亲人，关系如何随故事发展变化]
 
 ## 核心冲突
-[故事的主要矛盾和驱动力，包括外部冲突和内部冲突，至少100字]
+[故事的多层矛盾结构，至少200字：
+- 外部冲突：主角面对的外在威胁或障碍
+- 内部冲突：主角的内心挣扎和道德困境
+- 社会冲突：更宏大的社会/世界层面的矛盾
+- 关系冲突：人物之间的矛盾和张力]
 
-## 章节大纲
-（共{num_chapters}章，每章需要非常具体的情节描述）
-"""
-        for i in range(1, num_chapters + 1):
-            prompt += f"""
-### 第{i}章：[章节标题]
-- **开场场景**：[具体的时间、地点、氛围描写]
-- **主要事件**：[本章发生的1-3个关键事件，按顺序详细描述]
-- **人物互动**：[哪些角色出场，他们之间的对话和冲突要点]
-- **情感节奏**：[本章的情感基调变化，从开头到结尾的情绪走向]
-- **关键细节**：[需要着重描写的场景细节、物品、环境元素]
-- **章末转折**：[本章结尾的悬念、伏笔或转折点]
-"""
-        prompt += """
-## 伏笔与线索
-[列出3-5个贯穿全文的伏笔和线索，说明它们在哪些章节出现和揭示]
+## 故事弧线
+
+### 第一幕：起（约占全书前20%）
+**核心目标**：[这一幕要完成什么——建立世界、引入角色、设置悬念]
+**起始状态**：[故事开始时主角和世界的状态]
+**关键场景**：
+1. [开篇场景：具体描述，包括环境、人物、事件]
+2. [引发事件：打破日常的事件，详细描述]
+3. [第一个转折：推动主角踏上旅程的催化剂]
+**情感基调**：[从平静到不安，或从混乱到希望等]
+**埋下的伏笔**：[在这一幕中埋下哪些伏笔，将在后面揭示]
+
+### 第二幕上半：承（约占全书20%-50%）
+**核心目标**：[这一幕要完成什么——展开冒险、加深冲突、发展关系]
+**关键场景**：
+1. [重要事件1：详细描述]
+2. [重要事件2：详细描述]
+3. [重要事件3：详细描述]
+4. [中点转折：故事中点的重大转折或启示]
+**人物发展**：[各角色在这一段的成长和变化]
+**情感基调**：[逐渐升温的紧张感]
+**关键谜团/悬念**：[让读者欲罢不能的谜团]
+
+### 第二幕下半：转（约占全书50%-75%）
+**核心目标**：[加剧危机、黑暗时刻、联盟瓦解或重组]
+**关键场景**：
+1. [危机加剧的关键事件]
+2. [背叛/揭秘/重大失败]
+3. [最低谷：主角面临最大的困境]
+**人物发展**：[角色弧光的关键转变]
+**情感基调**：[从希望到绝望的转变]
+**伏笔揭示**：[哪些之前埋下的伏笔在这里揭示]
+
+### 第三幕：合（约占全书后25%）
+**核心目标**：[走向高潮、解决冲突、完成角色弧光]
+**关键场景**：
+1. [重整旗鼓/获得关键力量或信息]
+2. [最终对决/高潮场景的详细描述]
+3. [结局：各人物的命运，故事的收束]
+**人物发展**：[角色弧光的完成]
+**情感基调**：[从绝境到高潮的爆发]
+**主题升华**：[故事的核心主题如何在结尾得到升华]
+
+## 伏笔与线索网络
+[列出5-8个贯穿全文的伏笔和线索，说明它们在哪个弧线中出现和揭示。形成交叉的线索网]
+
+## 主题与象征
+[故事的深层主题——不只是情节，还有故事想要表达的思想。包括反复出现的象征物、意象]
 
 ## 写作风格指导
-[对本小说整体风格的建议：叙事视角、语言风格、节奏控制等]
+[叙事视角（第一人称/第三人称/多视角）、语言风格、节奏控制、对话风格、描写偏重]
 
 请确保：
-1. 章节之间有清晰的因果关系和情节递进
-2. 整体故事有完整的起承转合
-3. 人物发展有合理的成长曲线
-4. 伏笔和悬念合理分布，不要集中在某几章
-5. 每章大纲足够详细，能直接指导AI生成2000-4000字的章节内容"""
+1. 故事弧线之间有清晰的因果递进和张力升级
+2. 人物发展有合理的成长曲线，不要突然转变
+3. 伏笔和悬念形成网络，前后呼应
+4. 大纲足够详细，能支撑{target_chapters}章的长篇创作
+5. 每个弧线的关键场景描写具体到可以直接指导写作"""
     else:
         system = (
             "You are a senior fiction editor and story architect. You excel at developing "
-            "simple story concepts into complete, compelling novel outlines. Your outlines "
-            "must contain exceptionally rich detail — enough to directly guide an AI model "
-            "in generating high-quality chapter content. Each chapter outline should work "
-            "as a standalone writing brief."
+            "simple story concepts into expansive, compelling novel outlines. Your outlines "
+            "use story arcs and acts as structural units — NOT individual chapters. "
+            "Include exceptionally rich detail: character relationship webs, world-building, "
+            "multi-layered conflict escalation, and key turning points in each arc. "
+            "This outline will serve as the master blueprint for AI chapter-by-chapter generation."
         )
-        prompt = f"""Based on the following story idea, create a very detailed novel outline:
+        prompt = f"""Based on the following story idea, create an expansive and detailed novel outline.
+Target length: approximately {target_chapters} chapters.
 
 Story idea: {idea}
 
@@ -265,41 +313,80 @@ Please use this exact format:
 [A compelling title]
 
 ## Setting
-[Detailed world-building, at least 200 words. Include: time period, geography, social systems, cultural norms, special rules (magic systems, technology, etc.)]
+[Detailed world-building, at least 300 words. Include: time period, geography, social systems, cultural norms, history, special rules (magic systems, technology, etc.). Layer it — broad world, specific region, protagonist's immediate circle]
 
 ## Main Characters
-(At least 4 main characters, each with detailed profiles)
-- **[Full Name]** ([Age/Appearance]): [Personality — at least 3 key traits], [Background — family/organization/profession], [Core motivation — the inner desire driving their actions], [Character arc — how they change through the story], [Key relationships with other characters]
+(At least 6 characters: protagonist, antagonist, ally, mentor, love interest, key supporting)
+- **[Full Name]** ([Age/Appearance]): [Personality — at least 3 key traits], [Background], [Core motivation], [Character arc — complete transformation from start to end], [Secret or hidden side], [Key relationships]
+
+## Relationship Web
+[Describe the relationship map: who are allies/rivals/mentor-student/lovers/family, how relationships evolve through the story]
 
 ## Central Conflict
-[Main tension driving the story, including external and internal conflicts, at least 100 words]
+[Multi-layered conflict structure, at least 200 words:
+- External conflict: threats or obstacles the protagonist faces
+- Internal conflict: inner struggles and moral dilemmas
+- Social conflict: larger societal/world-level tensions
+- Relationship conflict: interpersonal tensions and rifts]
 
-## Chapter Outline
-({num_chapters} chapters, each with very specific plot details)
-"""
-        for i in range(1, num_chapters + 1):
-            prompt += f"""
-### Chapter {i}: [Title]
-- **Opening scene**: [Specific time, place, and atmosphere]
-- **Key events**: [1-3 major events in this chapter, described in sequence]
-- **Character interactions**: [Which characters appear, dialogue and conflict points]
-- **Emotional rhythm**: [The emotional tone arc from beginning to end of chapter]
-- **Key details**: [Important scene details, objects, environmental elements to emphasize]
-- **Chapter-end hook**: [The cliffhanger, foreshadowing, or turning point at chapter's end]
-"""
-        prompt += """
-## Foreshadowing & Threads
-[List 3-5 narrative threads running through the story, noting where they appear and resolve]
+## Story Arcs
+
+### Act I: Setup (roughly the first 20% of the story)
+**Core goal**: [What this act must accomplish — establish world, introduce characters, set up mysteries]
+**Starting state**: [The protagonist's and world's status quo]
+**Key scenes**:
+1. [Opening scene: specific description with setting, characters, events]
+2. [Inciting incident: the event that disrupts the status quo]
+3. [First turning point: the catalyst that launches the protagonist's journey]
+**Emotional tone**: [e.g., calm to uneasy, chaos to fragile hope]
+**Foreshadowing planted**: [What seeds are sown here for later payoff]
+
+### Act II-A: Rising Action (roughly 20%-50%)
+**Core goal**: [Expand the adventure, deepen conflicts, develop relationships]
+**Key scenes**:
+1. [Major event 1: detailed description]
+2. [Major event 2: detailed description]
+3. [Major event 3: detailed description]
+4. [Midpoint twist: the major revelation or reversal at the story's center]
+**Character development**: [How each character grows in this section]
+**Emotional tone**: [Building tension]
+**Key mysteries/suspense**: [What keeps readers turning pages]
+
+### Act II-B: Complications (roughly 50%-75%)
+**Core goal**: [Escalate crisis, dark moment, alliances fracture or reform]
+**Key scenes**:
+1. [Key event escalating the crisis]
+2. [Betrayal/revelation/major failure]
+3. [All-is-lost moment: protagonist's lowest point]
+**Character development**: [Critical arc turning points]
+**Emotional tone**: [Hope to despair]
+**Foreshadowing revealed**: [Which earlier seeds pay off here]
+
+### Act III: Resolution (roughly the final 25%)
+**Core goal**: [Build to climax, resolve conflicts, complete character arcs]
+**Key scenes**:
+1. [Rallying/gaining crucial power or knowledge]
+2. [Final confrontation/climax — detailed description]
+3. [Resolution: fates of characters, story closure]
+**Character development**: [Arcs completed]
+**Emotional tone**: [From desperation to cathartic climax]
+**Thematic payoff**: [How the story's core theme is crystallized in the ending]
+
+## Foreshadowing & Thread Network
+[List 5-8 narrative threads running through the story, noting which arc they appear in and where they resolve. Show how they interconnect]
+
+## Themes & Symbolism
+[The deeper themes — not just plot, but the ideas the story explores. Include recurring symbols and imagery]
 
 ## Style Guide
-[Recommendations for overall style: narrative POV, prose register, pacing approach]
+[Narrative POV (first person/third person/multiple), prose register, pacing, dialogue style, descriptive emphasis]
 
 Ensure:
-1. Clear cause-and-effect between chapters
-2. Complete narrative arc (setup, confrontation, resolution)
-3. Believable character growth curves
-4. Foreshadowing and suspense distributed evenly
-5. Each chapter outline is detailed enough to guide generation of 2000-4000 words"""
+1. Clear cause-and-effect escalation between arcs
+2. Believable character growth — no sudden personality shifts
+3. Foreshadowing and suspense form an interconnected web
+4. The outline is detailed enough to support {target_chapters} chapters of writing
+5. Each arc's key scenes are specific enough to directly guide prose generation"""
 
     return system, prompt
 
@@ -626,10 +713,13 @@ def generate_text_cloud(
         cjk = sum(1 for c in prompt[:200] if '\u4e00' <= c <= '\u9fff')
         system_prompt = ZH_SYSTEM if cjk > len(prompt[:200]) * 0.15 else EN_SYSTEM
 
-    return call_cloud_api(
-        system_prompt, prompt, provider, api_key,
-        temperature=temperature, max_tokens=max_new_tokens,
-    )
+    try:
+        return call_cloud_api(
+            system_prompt, prompt, provider, api_key,
+            temperature=temperature, max_tokens=max_new_tokens,
+        )
+    except Exception as e:
+        return f"Cloud API Error ({provider}): {e}"
 
 
 # ---------------------------------------------------------------------------
@@ -824,10 +914,22 @@ class Mastermind:
 
     @staticmethod
     def _extract_chapter_outline(outline: str, ch_num: int) -> str:
-        """Extract the specific chapter section from the full outline."""
+        """Extract relevant context from the outline for a given chapter.
+
+        If the outline has chapter-level sections (### Chapter N), extract that section.
+        Otherwise (arc-based outline), return the full outline so the cloud API can
+        determine what should happen in this chapter based on the story arcs.
+        """
+        # Try chapter-specific extraction first
         pattern = rf'(?:###?\s*(?:第{ch_num}章|Chapter\s*{ch_num})[：:\s]*)(.+?)(?=(?:###?\s*(?:第\d+章|Chapter\s*\d+))|$)'
         match = re.search(pattern, outline, re.DOTALL)
-        return match.group(0).strip() if match else f"Chapter {ch_num}"
+        if match:
+            return match.group(0).strip()
+        # Arc-based outline — return full outline (cloud API will interpret it)
+        # Trim if excessively long to stay within API limits
+        if len(outline) > 12000:
+            return outline[:12000] + "\n\n[...outline truncated...]"
+        return outline
 
     @staticmethod
     def plan_chapter(
@@ -848,51 +950,78 @@ class Mastermind:
 
         if lang == "zh":
             system = (
-                "你是一位资深小说编辑。你的任务是将结构化的章节大纲转化为散文体的场景引子，"
-                "供AI写手作为写作起点。场景引子必须是纯散文，不能包含任何标题、列表、或Markdown格式。"
+                "你是一位资深小说编辑和连载小说策划。你的任务是根据故事总大纲和已有进展，"
+                "为下一章制定详细的写作计划，并生成散文体的场景引子供AI写手使用。\n"
+                "关键要求：\n"
+                "1. 场景引子必须是纯散文，不能包含标题、列表或Markdown格式\n"
+                "2. 必须确保与前文的连续性——人物位置、情感状态、已发生的事件\n"
+                "3. 根据章节在全书中的位置，从大纲弧线中选择合适的情节推进\n"
+                "4. 维持故事节奏——不要跳跃太快，也不要原地踏步"
             )
             prompt = f"""请为第{ch_num}章创建写作计划。
 
-【本章大纲】
+【故事大纲】
 {chapter_outline}
 
-【故事圣经】
+【故事圣经——人物状态和剧情进展】
 {bible_summary if bible_summary else "（首章，无历史记录）"}
 
 【上一章结尾】
-{prev_ending[-800:] if prev_ending else "（首章）"}
+{prev_ending[-800:] if prev_ending else "（首章——从故事的起点开始）"}
+
+【任务】
+这是全书的第{ch_num}章。请根据大纲中的故事弧线，判断当前应该处于哪个阶段，
+然后为本章制定具体的写作计划。确保：
+- 与上一章的结尾自然衔接
+- 人物的言行与故事圣经中记录的状态一致
+- 情节推进符合大纲中对应弧线的方向
+- 每章有明确的情节推进，不要重复之前已写过的内容
 
 请输出JSON格式（必须合法JSON）：
 ```json
 {{
-  "scene_primer": "用散文体写一段场景引子（200-400字），描述本章开场的环境、氛围和人物状态。必须是纯叙事散文，不要使用任何标题、列表符号或Markdown格式。",
+  "scene_primer": "用散文体写一段场景引子（300-500字），描述本章开场的具体场景——时间、地点、环境细节、在场人物的状态和动作。必须与上一章结尾自然衔接。必须是纯叙事散文，不要使用任何标题、列表符号或Markdown格式。",
   "key_events": ["本章必须包含的关键事件1", "关键事件2", "关键事件3"],
-  "guidance": "给AI写手的具体写作指导：情感基调、节奏建议、需要注意的角色细节"
+  "guidance": "给AI写手的具体写作指导：本章的情感基调、节奏建议、需要重点刻画的人物互动、应避免的情节方向"
 }}
 ```"""
         else:
             system = (
-                "You are a senior fiction editor. Your task is to convert structured chapter outlines "
-                "into prose scene primers for an AI writer. The scene primer MUST be pure prose — "
-                "no headings, no bullet points, no markdown formatting whatsoever."
+                "You are a senior fiction editor and serial novel planner. Your task is to take "
+                "the story's master outline and existing progress, then create a detailed writing "
+                "plan for the next chapter with a prose scene primer for the AI writer.\n"
+                "Key requirements:\n"
+                "1. The scene primer MUST be pure prose — no headings, bullet points, or markdown\n"
+                "2. Ensure continuity with previous chapters — character locations, emotional states, events\n"
+                "3. Based on the chapter's position in the overall story, select appropriate plot progression from the outline arcs\n"
+                "4. Maintain story pacing — don't jump too fast or stall"
             )
             prompt = f"""Create a writing plan for Chapter {ch_num}.
 
-[Chapter outline]
+[Story outline]
 {chapter_outline}
 
-[Story bible]
+[Story bible — character states and plot progress]
 {bible_summary if bible_summary else "(First chapter, no history)"}
 
 [End of previous chapter]
-{prev_ending[-800:] if prev_ending else "(First chapter)"}
+{prev_ending[-800:] if prev_ending else "(First chapter — start from the story's beginning)"}
+
+[Task]
+This is Chapter {ch_num} of the full novel. Based on the story arcs in the outline,
+determine what stage the story should be at, then create a specific writing plan.
+Ensure:
+- Natural continuation from the previous chapter's ending
+- Character behavior consistent with the story bible's recorded states
+- Plot progression aligned with the corresponding arc in the outline
+- Clear plot advancement — do NOT repeat content already written in previous chapters
 
 Output as JSON (must be valid JSON):
 ```json
 {{
-  "scene_primer": "Write a prose scene primer (150-300 words) describing the chapter's opening environment, atmosphere, and character states. Must be pure narrative prose — no headings, bullet points, or markdown.",
+  "scene_primer": "Write a prose scene primer (200-400 words) describing the chapter's opening scene — specific time, place, environmental details, character states and actions. Must naturally follow from the previous chapter's ending. Must be pure narrative prose — no headings, bullet points, or markdown.",
   "key_events": ["Key event 1 that must happen", "Key event 2", "Key event 3"],
-  "guidance": "Specific writing guidance for the AI: emotional tone, pacing, character details to maintain"
+  "guidance": "Specific writing guidance: emotional tone, pacing, character interactions to emphasize, plot directions to avoid"
 }}
 ```"""
 
@@ -1354,95 +1483,112 @@ def generate_chapter_pipeline(
     mode_label = "cloud" if use_cloud else "local"
     log(f"Writer mode: {mode_label}")
 
-    # Step 1: Initialize bible if needed
-    if not bible_state or not bible_state.get("characters"):
-        log("Initializing story bible from outline...")
-        progress(0.05, desc="Initializing story bible...")
-        bible_state = StoryTracker.initialize_from_outline(
-            outline, api_provider, api_key, lang,
+    try:
+        # Step 1: Initialize bible if needed
+        if not bible_state or not bible_state.get("characters"):
+            log("Initializing story bible from outline...")
+            progress(0.05, desc="Initializing story bible...")
+            bible_state = StoryTracker.initialize_from_outline(
+                outline, api_provider, api_key, lang,
+            )
+            n_chars = len(bible_state.get("characters", {}))
+            n_threads = len(bible_state.get("plot_threads", []))
+            log(f"Bible initialized: {n_chars} characters, {n_threads} plot threads")
+
+        # Step 2: Mastermind plans the chapter
+        log(f"Mastermind planning chapter {ch_num}...")
+        progress(0.15, desc="Mastermind planning chapter...")
+        prev_ending = chapters_state[-1200:] if chapters_state else ""
+        plan = Mastermind.plan_chapter(
+            outline, ch_num, bible_state, prev_ending,
+            api_provider, api_key, lang,
         )
-        n_chars = len(bible_state.get("characters", {}))
-        n_threads = len(bible_state.get("plot_threads", []))
-        log(f"Bible initialized: {n_chars} characters, {n_threads} plot threads")
+        primer_preview = plan["scene_primer"][:150].replace("\n", " ")
+        log(f"Scene primer: {primer_preview}...")
+        if plan["key_events"]:
+            log(f"Key events: {', '.join(plan['key_events'][:3])}")
+        if plan.get("guidance"):
+            log(f"Guidance: {plan['guidance'][:100]}...")
 
-    # Step 2: Mastermind plans the chapter
-    log(f"Mastermind planning chapter {ch_num}...")
-    progress(0.15, desc="Mastermind planning chapter...")
-    prev_ending = chapters_state[-1200:] if chapters_state else ""
-    plan = Mastermind.plan_chapter(
-        outline, ch_num, bible_state, prev_ending,
-        api_provider, api_key, lang,
-    )
-    primer_preview = plan["scene_primer"][:150].replace("\n", " ")
-    log(f"Scene primer: {primer_preview}...")
-    if plan["key_events"]:
-        log(f"Key events: {', '.join(plan['key_events'][:3])}")
-    if plan.get("guidance"):
-        log(f"Guidance: {plan['guidance'][:100]}...")
+        # Step 3: Multi-pass generation
+        tokens_per_pass = min(max_tokens // num_passes, 1500)
+        if tokens_per_pass < 512:
+            log(f"Warning: tokens_per_pass ({tokens_per_pass}) below minimum 512, clamping up")
+            tokens_per_pass = 512
+        log(f"Generating chapter ({num_passes} passes, {tokens_per_pass} tokens/pass, {mode_label})...")
+        progress(0.3, desc=f"Writing chapter ({num_passes} passes, {mode_label})...")
 
-    # Step 3: Multi-pass generation
-    tokens_per_pass = min(max_tokens // num_passes, 1500)
-    if tokens_per_pass < 512:
-        log(f"Warning: tokens_per_pass ({tokens_per_pass}) below minimum 512, clamping up")
-        tokens_per_pass = 512
-    log(f"Generating chapter ({num_passes} passes, {tokens_per_pass} tokens/pass, {mode_label})...")
-    progress(0.3, desc=f"Writing chapter ({num_passes} passes, {mode_label})...")
+        try:
+            result, pass_log = generate_chapter_multipass(
+                plan["scene_primer"], prev_ending, num_passes, tokens_per_pass,
+                lang, temperature, top_p,
+                use_cloud=use_cloud, cloud_provider=api_provider, cloud_api_key=api_key,
+            )
+        except Exception as e:
+            log(f"ERROR in chapter generation: {e}")
+            error_msg = f"Chapter generation failed: {e}\nCheck API key and provider settings."
+            return error_msg, chapters_state, bible_state, "\n".join(log_lines), ""
 
-    result, pass_log = generate_chapter_multipass(
-        plan["scene_primer"], prev_ending, num_passes, tokens_per_pass,
-        lang, temperature, top_p,
-        use_cloud=use_cloud, cloud_provider=api_provider, cloud_api_key=api_key,
-    )
-    for pl in pass_log:
-        log(pl)
-    log(f"Total generated: {len(result)} chars")
+        for pl in pass_log:
+            log(pl)
+        log(f"Total generated: {len(result)} chars")
 
-    # Step 4: Review + update bible (combined, 1 API call)
-    log("Reviewing chapter + updating story bible...")
-    progress(0.85, desc="Reviewing chapter...")
-    review_result = Mastermind.review_and_update(
-        plan, result, bible_state, ch_num,
-        api_provider, api_key, lang,
-    )
+        if not result.strip():
+            log("WARNING: Generation produced empty text")
+            return "Generation produced empty text. Try again or check your API settings.", \
+                chapters_state, bible_state, "\n".join(log_lines), ""
 
-    review = review_result.get("review", {})
-    bible_updates = review_result.get("bible_updates", {})
+        # Step 4: Review + update bible (combined, 1 API call)
+        log("Reviewing chapter + updating story bible...")
+        progress(0.85, desc="Reviewing chapter...")
+        review_result = Mastermind.review_and_update(
+            plan, result, bible_state, ch_num,
+            api_provider, api_key, lang,
+        )
 
-    # Apply bible updates
-    bible_state = StoryTracker.apply_updates(bible_state, bible_updates)
+        review = review_result.get("review", {})
+        bible_updates = review_result.get("bible_updates", {})
 
-    # Format review text
-    approved = review.get("approved", True)
-    scores = review.get("scores", {})
-    issues = review.get("issues", [])
+        # Apply bible updates
+        bible_state = StoryTracker.apply_updates(bible_state, bible_updates)
 
-    status = "APPROVED" if approved else "NEEDS REVISION"
-    log(f"Review: {status}")
-    if scores:
-        score_str = ", ".join(f"{k}: {v}/10" for k, v in scores.items())
-        log(f"Scores: {score_str}")
-    if issues:
-        for issue in issues:
-            log(f"Issue: {issue}")
+        # Format review text
+        approved = review.get("approved", True)
+        scores = review.get("scores", {})
+        issues = review.get("issues", [])
 
-    review_text = f"Status: {status}\n"
-    if scores:
-        review_text += "Scores:\n"
-        for k, v in scores.items():
-            review_text += f"  {k}: {v}/10\n"
-    if issues:
-        review_text += "Issues:\n"
-        for issue in issues:
-            review_text += f"  - {issue}\n"
-    if not approved and review.get("regen_guidance"):
-        review_text += f"\nRevision guidance: {review['regen_guidance']}\n"
+        status = "APPROVED" if approved else "NEEDS REVISION"
+        log(f"Review: {status}")
+        if scores:
+            score_str = ", ".join(f"{k}: {v}/10" for k, v in scores.items())
+            log(f"Scores: {score_str}")
+        if issues:
+            for issue in issues:
+                log(f"Issue: {issue}")
 
-    # Accumulate
-    sep = f"\n\n{'='*40}\n第{ch_num}章 / Chapter {ch_num}\n{'='*40}\n\n"
-    new_acc = chapters_state + sep + result if chapters_state else result
+        review_text = f"Status: {status}\n"
+        if scores:
+            review_text += "Scores:\n"
+            for k, v in scores.items():
+                review_text += f"  {k}: {v}/10\n"
+        if issues:
+            review_text += "Issues:\n"
+            for issue in issues:
+                review_text += f"  - {issue}\n"
+        if not approved and review.get("regen_guidance"):
+            review_text += f"\nRevision guidance: {review['regen_guidance']}\n"
 
-    progress(1.0, desc="Chapter complete!")
-    return result, new_acc, bible_state, "\n".join(log_lines), review_text
+        # Accumulate
+        sep = f"\n\n{'='*40}\n第{ch_num}章 / Chapter {ch_num}\n{'='*40}\n\n"
+        new_acc = chapters_state + sep + result if chapters_state else result
+
+        progress(1.0, desc="Chapter complete!")
+        return result, new_acc, bible_state, "\n".join(log_lines), review_text
+
+    except Exception as e:
+        log(f"PIPELINE ERROR: {e}")
+        error_msg = f"Pipeline error: {e}\nSee Generation Log for details."
+        return error_msg, chapters_state, bible_state, "\n".join(log_lines), ""
 
 
 # ---------------------------------------------------------------------------
@@ -1661,15 +1807,17 @@ def build_ui():
                             lines=4,
                         )
                     with gr.Column(scale=1):
-                        num_chapters_slider = gr.Slider(3, 20, value=8, step=1, label="Chapters")
+                        num_chapters_slider = gr.Slider(3, 200, value=30, step=1, label="Target Chapters",
+                                                         info="Approximate story length — outline uses arcs, not individual chapters")
                         develop_btn = gr.Button(
                             "Develop Plot (Cloud AI)", variant="primary", size="lg",
                         )
 
                 gr.Markdown("### Step 2: Plot Outline")
                 gr.Markdown(
-                    "Generated by Gemini/GPT. Review and edit freely — "
-                    "the more detailed the outline, the better your chapters will be."
+                    "Generated by Gemini/GPT as a high-level story arc structure (not chapter-by-chapter). "
+                    "Review and edit freely — add detail, change plot points, extend arcs. "
+                    "The Mastermind agent will plan each chapter from this outline."
                 )
                 plot_outline = gr.Textbox(
                     label="Plot Outline (editable)",
@@ -1693,7 +1841,7 @@ def build_ui():
                 )
                 with gr.Row():
                     with gr.Column(scale=1):
-                        chapter_num = gr.Slider(1, 20, value=1, step=1, label="Chapter Number")
+                        chapter_num = gr.Slider(1, 200, value=1, step=1, label="Chapter Number")
                         style_notes = gr.Textbox(
                             label="Style Notes (optional)",
                             placeholder="e.g., 多用对话 / focus on action / noir tone",
