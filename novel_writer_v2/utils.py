@@ -17,7 +17,7 @@ def detect_language(text: str) -> str:
     return "zh" if (cjk_count / total_alpha) > 0.3 else "en"
 
 
-def parse_json_response(text: str) -> dict:
+def parse_json_response(text: str) -> dict | list:
     """Extract JSON from an LLM response that may contain markdown fences."""
     # Try to find JSON block in markdown code fence
     m = re.search(r'```(?:json)?\s*\n(.*?)\n```', text, re.DOTALL)
@@ -26,12 +26,26 @@ def parse_json_response(text: str) -> dict:
     # Try parsing the whole text as JSON
     cleaned = text.strip()
     if cleaned.startswith('{') or cleaned.startswith('['):
-        return json.loads(cleaned)
-    # Last resort: find first { to last }
-    start = cleaned.find('{')
-    end = cleaned.rfind('}')
-    if start != -1 and end != -1:
-        return json.loads(cleaned[start:end + 1])
+        try:
+            return json.loads(cleaned)
+        except json.JSONDecodeError:
+            pass
+    # Try to find a JSON array [...] first
+    arr_start = cleaned.find('[')
+    arr_end = cleaned.rfind(']')
+    if arr_start != -1 and arr_end > arr_start:
+        try:
+            return json.loads(cleaned[arr_start:arr_end + 1])
+        except json.JSONDecodeError:
+            pass
+    # Try to find a JSON object {...}
+    obj_start = cleaned.find('{')
+    obj_end = cleaned.rfind('}')
+    if obj_start != -1 and obj_end > obj_start:
+        try:
+            return json.loads(cleaned[obj_start:obj_end + 1])
+        except json.JSONDecodeError:
+            pass
     raise ValueError(f"Could not parse JSON from response: {text[:200]}...")
 
 
