@@ -92,12 +92,14 @@ class BaseAgent:
         system: str,
         prompt: str,
         temperature: float | None = None,
-    ) -> dict:
+        max_tokens: int | None = None,
+    ) -> dict | list:
         """Call Gemini and parse JSON from the response."""
         raw = self.call_gemini(
-            system + "\n\nRespond with valid JSON only.",
+            system + "\n\nRespond with valid JSON only. Do not use markdown fences.",
             prompt,
             temperature=temperature,
+            max_tokens=max_tokens or 8192,
         )
         return parse_json_response(raw)
 

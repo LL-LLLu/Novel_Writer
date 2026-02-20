@@ -17,12 +17,85 @@ def detect_language(text: str) -> str:
     return "zh" if (cjk_count / total_alpha) > 0.3 else "en"
 
 
+def _repair_truncated_json(text: str) -> str:
+    """Attempt to repair truncated JSON by finding the last complete top-level element."""
+    if not text or text[0] not in ('{', '['):
+        return text
+
+    # For arrays: find the last complete object `}` followed by `,` or at array level
+    # Strategy: progressively try parsing longer prefixes ending at `}` or `]`
+    # But that's slow. Instead: find the last `}` that makes valid JSON when we close.
+    if text[0] == '[':
+        # Find positions of all top-level-ish `},` or `}]` patterns
+        # Walk backwards from the end looking for a `}` that completes an element
+        last_brace = len(text)
+        while True:
+            last_brace = text.rfind('}', 0, last_brace)
+            if last_brace <= 0:
+                break
+            # Try closing the array after this brace
+            candidate = text[:last_brace + 1].rstrip().rstrip(',') + ']'
+            try:
+                return candidate
+            except Exception:
+                pass
+            # Try parsing it
+            try:
+                json.loads(candidate)
+                return candidate
+            except json.JSONDecodeError:
+                continue
+
+    # For objects: find the last complete key-value pair
+    if text[0] == '{':
+        last_end = len(text)
+        for ch in ('}', ']', '"'):
+            while True:
+                last_end_pos = text.rfind(ch, 0, last_end)
+                if last_end_pos <= 0:
+                    break
+                candidate = text[:last_end_pos + 1]
+                # Count open/close to figure out what to append
+                stack = []
+                in_str = False
+                esc = False
+                for c in candidate:
+                    if esc:
+                        esc = False
+                        continue
+                    if c == '\\' and in_str:
+                        esc = True
+                        continue
+                    if c == '"':
+                        in_str = not in_str
+                        continue
+                    if in_str:
+                        continue
+                    if c in ('{', '['):
+                        stack.append('}' if c == '{' else ']')
+                    elif c in ('}', ']') and stack:
+                        stack.pop()
+                closing = ''.join(reversed(stack))
+                try:
+                    json.loads(candidate + closing)
+                    return candidate + closing
+                except json.JSONDecodeError:
+                    last_end = last_end_pos
+                    continue
+                break
+
+    return text
+
+
 def parse_json_response(text: str) -> dict | list:
     """Extract JSON from an LLM response that may contain markdown fences."""
     # Try to find JSON block in markdown code fence
     m = re.search(r'```(?:json)?\s*\n(.*?)\n```', text, re.DOTALL)
     if m:
-        return json.loads(m.group(1))
+        try:
+            return json.loads(m.group(1))
+        except json.JSONDecodeError:
+            pass
     # Try parsing the whole text as JSON
     cleaned = text.strip()
     if cleaned.startswith('{') or cleaned.startswith('['):
@@ -30,22 +103,26 @@ def parse_json_response(text: str) -> dict | list:
             return json.loads(cleaned)
         except json.JSONDecodeError:
             pass
-    # Try to find a JSON array [...] first
-    arr_start = cleaned.find('[')
-    arr_end = cleaned.rfind(']')
-    if arr_start != -1 and arr_end > arr_start:
-        try:
-            return json.loads(cleaned[arr_start:arr_end + 1])
-        except json.JSONDecodeError:
-            pass
-    # Try to find a JSON object {...}
-    obj_start = cleaned.find('{')
-    obj_end = cleaned.rfind('}')
-    if obj_start != -1 and obj_end > obj_start:
-        try:
-            return json.loads(cleaned[obj_start:obj_end + 1])
-        except json.JSONDecodeError:
-            pass
+    # Find the outermost JSON structure
+    for open_ch, close_ch in [('[', ']'), ('{', '}')]:
+        start = cleaned.find(open_ch)
+        if start == -1:
+            continue
+        end = cleaned.rfind(close_ch)
+        if end > start:
+            try:
+                return json.loads(cleaned[start:end + 1])
+            except json.JSONDecodeError:
+                pass
+    # Last resort: try to repair truncated JSON
+    for open_ch in ('[', '{'):
+        start = cleaned.find(open_ch)
+        if start != -1:
+            try:
+                repaired = _repair_truncated_json(cleaned[start:])
+                return json.loads(repaired)
+            except (json.JSONDecodeError, ValueError):
+                pass
     raise ValueError(f"Could not parse JSON from response: {text[:200]}...")
 
 
