@@ -9,9 +9,9 @@
 #      - Disk: 50GB container + 20GB volume (/workspace is persistent)
 #
 #   2. Open the pod's web terminal or SSH in, then run:
-#        curl -sSL https://raw.githubusercontent.com/<your-user>/Novel_Writer/main/scripts/runpod_setup.sh | bash
+#        curl -sSL https://raw.githubusercontent.com/LL-LLLu/Novel_Writer/main/scripts/runpod_setup.sh | bash
 #      Or clone first:
-#        git clone https://github.com/<your-user>/Novel_Writer.git /workspace/Novel_Writer
+#        git clone https://github.com/LL-LLLu/Novel_Writer.git /workspace/Novel_Writer
 #        bash /workspace/Novel_Writer/scripts/runpod_setup.sh
 #
 #   3. Upload your LoRA adapter (see UPLOAD section below)
@@ -34,10 +34,10 @@ MODELS_DIR="${APP_DIR}/models"
 if [ ! -d "$APP_DIR" ]; then
     echo "[1/4] Cloning Novel_Writer repository..."
     cd "$WORK_DIR"
-    git clone https://github.com/$(git config user.name 2>/dev/null || echo "YOUR_USER")/Novel_Writer.git 2>/dev/null || {
+    git clone https://github.com/LL-LLLu/Novel_Writer.git 2>/dev/null || {
         echo ""
         echo "ERROR: Could not clone repo. Please clone manually:"
-        echo "  git clone https://github.com/YOUR_USER/Novel_Writer.git ${APP_DIR}"
+        echo "  git clone https://github.com/LL-LLLu/Novel_Writer.git ${APP_DIR}"
         echo ""
         exit 1
     }
@@ -55,6 +55,7 @@ pip install -q \
     gradio \
     google-genai \
     openai \
+    huggingface_hub \
     torch \
     transformers \
     peft \
@@ -84,8 +85,9 @@ if [ "$ADAPTER_FOUND" = false ]; then
     echo "    No LoRA adapter found in ${MODELS_DIR}/"
     echo ""
     echo "    ===== UPLOAD YOUR LORA ADAPTER ====="
-    echo "    Option A: From Hugging Face Hub"
-    echo "      huggingface-cli download YOUR_USER/qwen3_32b_novel_lora --local-dir ${MODELS_DIR}/qwen3_32b_novel_lora"
+    echo "    Option A: From Hugging Face Hub (recommended)"
+    echo "      huggingface-cli download LLLLLu/Novel_dragon --local-dir ${MODELS_DIR}/Novel_dragon"
+    echo "      Or use the web UI: enter 'LLLLLu/Novel_dragon' in HF repo ID and click Download"
     echo ""
     echo "    Option B: From your local machine (run on YOUR Mac):"
     echo "      scp -r models/qwen3_32b_novel_lora root@<POD_IP>:${MODELS_DIR}/"
