@@ -1,5 +1,0 @@
-# Instruction Generation Config
-num_instructions_per_chunk: 3
-use_llm: false
-api_key: null
-model: gpt-3.5-turbo
