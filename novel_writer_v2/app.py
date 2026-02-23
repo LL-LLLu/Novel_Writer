@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import os
 import threading
 import traceback
 
@@ -12,6 +13,28 @@ from .models.story_state import StoryState
 from .models.story_bible import StoryBible
 from .pipeline import Pipeline
 from .utils import detect_language
+
+# ---------------------------------------------------------------------------
+# Persistent settings (saved to ~/.novel_writer_v2/settings.json)
+# ---------------------------------------------------------------------------
+_SETTINGS_DIR = os.path.expanduser("~/.novel_writer_v2")
+_SETTINGS_FILE = os.path.join(_SETTINGS_DIR, "settings.json")
+
+
+def _load_settings() -> dict:
+    """Load saved settings from disk."""
+    try:
+        with open(_SETTINGS_FILE, "r") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _save_settings(settings: dict) -> None:
+    """Save settings to disk."""
+    os.makedirs(_SETTINGS_DIR, exist_ok=True)
+    with open(_SETTINGS_FILE, "w") as f:
+        json.dump(settings, f, indent=2)
 
 # ---------------------------------------------------------------------------
 # Global mutable state (per-session in single-user mode)
@@ -60,7 +83,18 @@ def _rebuild_pipeline(
     )
     _state["pipeline"] = Pipeline(cfg)
     _state["story_state"].language = language
-    return "Pipeline initialized successfully."
+    # Persist settings so they survive page refresh
+    _save_settings({
+        "gemini_key": gemini_key,
+        "gemini_model": gemini_model,
+        "qwen_key": qwen_key,
+        "qwen_model": qwen_model,
+        "language": language,
+        "max_rounds": int(max_rounds),
+        "min_chars": int(min_chars),
+        "max_chars": int(max_chars),
+    })
+    return "Settings saved and pipeline initialized."
 
 
 # ---------------------------------------------------------------------------
@@ -352,6 +386,8 @@ def _export_story():
 # Build the Gradio app
 # ---------------------------------------------------------------------------
 def create_app() -> gr.Blocks:
+    saved = _load_settings()
+
     with gr.Blocks(title="Multi-Agent Story Generator v2") as app:
         gr.Markdown("# Multi-Agent Story Generator v2\n8 specialized AI agents collaborate to write your novel.")
 
@@ -360,36 +396,42 @@ def create_app() -> gr.Blocks:
             gr.Markdown("## API Configuration")
             with gr.Row():
                 with gr.Column():
-                    gemini_key = gr.Textbox(label="Gemini API Key", type="password")
+                    gemini_key = gr.Textbox(
+                        label="Gemini API Key", type="password",
+                        value=saved.get("gemini_key", ""),
+                    )
                     gemini_model = gr.Dropdown(
                         choices=["gemini-3.1-pro-preview", "gemini-2.5-pro-preview-05-06", "gemini-2.5-flash-preview-05-20"],
-                        value="gemini-3.1-pro-preview",
+                        value=saved.get("gemini_model", "gemini-3.1-pro-preview"),
                         label="Gemini Model",
                     )
                 with gr.Column():
-                    qwen_key = gr.Textbox(label="Qwen (DashScope) API Key", type="password")
+                    qwen_key = gr.Textbox(
+                        label="Qwen (DashScope) API Key", type="password",
+                        value=saved.get("qwen_key", ""),
+                    )
                     qwen_model = gr.Dropdown(
                         choices=["qwen3.5-plus", "qwen-plus", "qwen-max"],
-                        value="qwen3.5-plus",
+                        value=saved.get("qwen_model", "qwen3.5-plus"),
                         label="Qwen Model",
                     )
             with gr.Row():
                 language = gr.Dropdown(
                     choices=["auto", "en", "zh"],
-                    value="auto",
+                    value=saved.get("language", "auto"),
                     label="Language",
                 )
                 max_rounds = gr.Slider(
-                    minimum=1, maximum=5, value=3, step=1,
+                    minimum=1, maximum=5, value=saved.get("max_rounds", 3), step=1,
                     label="Max Debate Rounds",
                 )
             with gr.Row():
                 min_chars = gr.Slider(
-                    minimum=2000, maximum=10000, value=5000, step=500,
+                    minimum=2000, maximum=10000, value=saved.get("min_chars", 5000), step=500,
                     label="Min Chapter Chars",
                 )
                 max_chars = gr.Slider(
-                    minimum=3000, maximum=15000, value=8000, step=500,
+                    minimum=3000, maximum=15000, value=saved.get("max_chars", 8000), step=500,
                     label="Max Chapter Chars",
                 )
             setup_status = gr.Textbox(label="Status", interactive=False)
