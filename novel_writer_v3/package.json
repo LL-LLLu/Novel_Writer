@@ -1,0 +1,15 @@
+{
+  "name": "novel-writer-v3",
+  "version": "3.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently --names backend,frontend --prefix-colors blue,green \"npm run backend\" \"npm run frontend\"",
+    "backend": "venv/bin/python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload",
+    "frontend": "cd frontend && npm run dev",
+    "build": "cd frontend && npm run build",
+    "install:all": "cd frontend && npm install && cd .. && python3 -m venv venv && venv/bin/pip install -r requirements.txt"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.0"
+  }
+}
